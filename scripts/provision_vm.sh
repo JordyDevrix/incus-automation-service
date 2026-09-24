@@ -2,7 +2,7 @@
 # ==============================================================================
 # Script: provision_vm.sh
 # Description: Provisions an Incus VM directly with guaranteed, non-conflicting
-# IPv4 and IPv6 addresses designed to scale to 400+ student workloads.
+# IPv4 and IPv6 addresses aligned with the active host Incus bridge network.
 # Single source of truth for Incus VM creation, resource configuration, and networking.
 # ==============================================================================
 
@@ -49,7 +49,7 @@ ADMIN_USER="${INSTANCE_ADMIN_USER:-admin}"
 LIFETIME="${INSTANCE_LIFETIME:-7d}"
 VM_IDENTIFIER="${VM_IDENTIFIER:-}"
 
-# High-Capacity /20 Network Configuration (4,093 usable host IPs)
+# High-Capacity /20 Network Configuration Defaults
 NETWORK_NAME="${INSTANCE_NETWORK:-incusbr0}"
 ASSIGNED_IPV4="${INSTANCE_IPV4:-}"
 ASSIGNED_IPV6="${INSTANCE_IPV6:-}"
@@ -170,7 +170,13 @@ if [[ -z "$VM_IDENTIFIER" ]]; then
     VM_IDENTIFIER="$VM_NAME"
 fi
 
-INCUS_BIN="$(command -v incus || true)"
+INCUS_BIN=""
+for candidate in "$(command -v incus || true)" "/usr/local/bin/incus" "/usr/bin/incus" "/snap/bin/incus" "$(command -v lxc || true)"; do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+        INCUS_BIN="$candidate"
+        break
+    fi
+done
 
 if [[ -z "$INCUS_BIN" ]]; then
     log_warn "Incus command binary not found on this system PATH."
@@ -181,92 +187,120 @@ elif [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Bridge Network Auto-Scaling & Subnet Alignment
+# 2. Bridge Network Auto-Inspection & Subnet Alignment
 # ------------------------------------------------------------------------------
 ACTUAL_BRIDGE_V4=""
 ACTUAL_BRIDGE_V6=""
 
 if [[ -n "$INCUS_BIN" && "$DRY_RUN" != "1" && "$DRY_RUN" != "true" ]]; then
     # Create network if missing
-    if ! incus network show "$NETWORK_NAME" &>/dev/null; then
-        log_info "Creating high-capacity bridge '$NETWORK_NAME' ($GATEWAY_IPV4/$SUBNET_CIDR_V4 -> 4093 hosts)..."
-        incus network create "$NETWORK_NAME" \
+    if ! "$INCUS_BIN" network show "$NETWORK_NAME" &>/dev/null; then
+        log_info "Creating bridge '$NETWORK_NAME' ($GATEWAY_IPV4/$SUBNET_CIDR_V4 -> 4093 hosts)..."
+        "$INCUS_BIN" network create "$NETWORK_NAME" \
             ipv4.address="${GATEWAY_IPV4}/${SUBNET_CIDR_V4}" \
             ipv4.nat=true \
             ipv4.dhcp=true \
             ipv6.address="${GATEWAY_IPV6}/${SUBNET_CIDR_V6}" \
             ipv6.nat=true \
-            ipv6.dhcp=true || true
+            ipv6.dhcp=true 2>/dev/null || true
     fi
 
     # Read current bridge IP config
-    ACTUAL_BRIDGE_V4="$(incus network get "$NETWORK_NAME" ipv4.address 2>/dev/null || true)"
-    ACTUAL_BRIDGE_V6="$(incus network get "$NETWORK_NAME" ipv6.address 2>/dev/null || true)"
-
-    # If bridge is /24 (only 253 hosts), try expanding to /20 for 400+ student VMs
-    if [[ "$ACTUAL_BRIDGE_V4" =~ /24$ || "$ACTUAL_BRIDGE_V4" =~ /25$ || "$ACTUAL_BRIDGE_V4" =~ /26$ || "$ACTUAL_BRIDGE_V4" == "auto" || -z "$ACTUAL_BRIDGE_V4" ]]; then
-        log_info "Attempting to expand bridge '$NETWORK_NAME' to /20 high-capacity pool ($GATEWAY_IPV4/$SUBNET_CIDR_V4)..."
-        incus network set "$NETWORK_NAME" ipv4.address="${GATEWAY_IPV4}/${SUBNET_CIDR_V4}" ipv4.nat=true ipv4.dhcp=true 2>/dev/null || log_warn "Could not update bridge IPv4 dynamically. Retaining current bridge subnet: $ACTUAL_BRIDGE_V4"
-        if [[ -z "$ACTUAL_BRIDGE_V6" || "$ACTUAL_BRIDGE_V6" == "none" || "$ACTUAL_BRIDGE_V6" == "auto" ]]; then
-            incus network set "$NETWORK_NAME" ipv6.address="${GATEWAY_IPV6}/${SUBNET_CIDR_V6}" ipv6.nat=true ipv6.dhcp=true 2>/dev/null || true
-        fi
-        ACTUAL_BRIDGE_V4="$(incus network get "$NETWORK_NAME" ipv4.address 2>/dev/null || true)"
-        ACTUAL_BRIDGE_V6="$(incus network get "$NETWORK_NAME" ipv6.address 2>/dev/null || true)"
-    fi
+    ACTUAL_BRIDGE_V4="$("$INCUS_BIN" network get "$NETWORK_NAME" ipv4.address 2>/dev/null || true)"
+    ACTUAL_BRIDGE_V6="$("$INCUS_BIN" network get "$NETWORK_NAME" ipv6.address 2>/dev/null || true)"
 fi
 
-# Ensure ASSIGNED_IPV4 is strictly within the bridge's actual subnet
+# Dynamically calculate IP alignment with actual host bridge subnet
 ALIGNED_NETWORK_PARAMS=$(python3 - <<EOF
 import ipaddress
 import sys
 import zlib
 
 bridge_v4 = "$ACTUAL_BRIDGE_V4".strip()
+bridge_v6 = "$ACTUAL_BRIDGE_V6".strip()
 req_v4 = "$ASSIGNED_IPV4".strip()
+req_v6 = "$ASSIGNED_IPV6".strip()
 vm_id = "$VM_IDENTIFIER".strip()
-def_v4 = "$GATEWAY_IPV4"
-def_cidr = "$SUBNET_CIDR_V4"
+def_v4_gw = "$GATEWAY_IPV4"
+def_v4_cidr = "$SUBNET_CIDR_V4"
+def_v6_gw = "$GATEWAY_IPV6"
+def_v6_cidr = "$SUBNET_CIDR_V6"
 
+final_v4 = ""
+final_v4_gw = def_v4_gw
+final_v4_cidr = def_v4_cidr
+
+final_v6 = ""
+final_v6_gw = def_v6_gw
+final_v6_cidr = def_v6_cidr
+
+# 1. Process IPv4 Subnet Alignment
 if bridge_v4 and "/" in bridge_v4 and bridge_v4 not in ("none", "auto"):
-    net = ipaddress.IPv4Network(bridge_v4, strict=False)
-    gw = str(net.network_address + 1)
-    cidr = str(net.prefixlen)
-    
-    # Check if requested IP fits
+    try:
+        ip_part, cidr_part = bridge_v4.split("/")
+        net4 = ipaddress.IPv4Network(f"{ip_part}/{cidr_part}", strict=False)
+        final_v4_gw = ip_part
+        final_v4_cidr = cidr_part
+
+        # Check if requested IP is inside this subnet
+        if req_v4:
+            try:
+                ip_obj = ipaddress.IPv4Address(req_v4)
+                if ip_obj in net4 and ip_obj != net4.network_address and ip_obj != ipaddress.IPv4Address(final_v4_gw) and ip_obj != net4.broadcast_address:
+                    final_v4 = req_v4
+            except Exception:
+                pass
+
+        if not final_v4:
+            # Generate deterministic IP in this bridge subnet
+            hash_val = zlib.crc32(vm_id.encode())
+            num_hosts = net4.num_addresses - 3
+            if num_hosts > 0:
+                offset = (hash_val % num_hosts) + 2
+                final_v4 = str(net4.network_address + offset)
+    except Exception:
+        pass
+
+if not final_v4:
     if req_v4:
-        try:
-            ip_obj = ipaddress.IPv4Address(req_v4)
-            if ip_obj in net and ip_obj != net.network_address and ip_obj != (net.network_address + 1) and ip_obj != net.broadcast_address:
-                print(f"ASSIGNED_IPV4={req_v4}")
-                print(f"GATEWAY_IPV4={gw}")
-                print(f"SUBNET_CIDR_V4={cidr}")
-                sys.exit(0)
-        except Exception:
-            pass
-    
-    # Generate valid IP in this subnet
-    hash_val = zlib.crc32(vm_id.encode())
-    num_hosts = net.num_addresses - 3
-    if num_hosts > 0:
-        offset = (hash_val % num_hosts) + 2
-        ip = str(net.network_address + offset)
-        print(f"ASSIGNED_IPV4={ip}")
-        print(f"GATEWAY_IPV4={gw}")
-        print(f"SUBNET_CIDR_V4={cidr}")
-        sys.exit(0)
+        final_v4 = req_v4
+    else:
+        hash_val = zlib.crc32(vm_id.encode())
+        offset = (hash_val % 4090) + 2
+        oct3 = offset // 256
+        oct4 = offset % 256
+        if oct4 == 0: oct4 = 1
+        final_v4 = f"10.100.{oct3}.{oct4}"
 
-# Default /20 fallback
-if not req_v4:
-    hash_val = zlib.crc32(vm_id.encode())
-    offset = (hash_val % 4090) + 2
-    oct3 = offset // 256
-    oct4 = offset % 256
-    if oct4 == 0: oct4 = 1
-    req_v4 = f"10.100.{oct3}.{oct4}"
+# 2. Process IPv6 Subnet Alignment
+if bridge_v6 and "/" in bridge_v6 and bridge_v6 not in ("none", "auto"):
+    try:
+        v6_ip_part, v6_cidr_part = bridge_v6.split("/")
+        net6 = ipaddress.IPv6Network(f"{v6_ip_part}/{v6_cidr_part}", strict=False)
+        final_v6_gw = v6_ip_part
+        final_v6_cidr = v6_cidr_part
+        
+        parts = [p for p in v6_ip_part.split(":") if p]
+        prefix = ":".join(parts[:4] if len(parts) >= 4 else parts[:3])
+        
+        hash_val = zlib.crc32(vm_id.encode()) % 65530 + 2
+        final_v6 = f"{prefix}::{hash_val:x}"
+    except Exception:
+        pass
 
-print(f"ASSIGNED_IPV4={req_v4}")
-print(f"GATEWAY_IPV4={def_v4}")
-print(f"SUBNET_CIDR_V4={def_cidr}")
+if not final_v6:
+    if req_v6:
+        final_v6 = req_v6
+    else:
+        hash_val = zlib.crc32(vm_id.encode()) % 65530 + 2
+        final_v6 = f"fd42:100:100::{hash_val:x}"
+
+print(f"ASSIGNED_IPV4={final_v4}")
+print(f"GATEWAY_IPV4={final_v4_gw}")
+print(f"SUBNET_CIDR_V4={final_v4_cidr}")
+print(f"ASSIGNED_IPV6={final_v6}")
+print(f"GATEWAY_IPV6={final_v6_gw}")
+print(f"SUBNET_CIDR_V6={final_v6_cidr}")
 EOF
 )
 
@@ -275,10 +309,6 @@ while IFS='=' read -r key val; do
         export "$key"="$val"
     fi
 done <<< "$ALIGNED_NETWORK_PARAMS"
-
-if [[ -z "$ASSIGNED_IPV6" ]]; then
-    ASSIGNED_IPV6="fd42:100:100::$(echo -n "$ASSIGNED_IPV4" | awk -F. '{printf "%x%02x", $3, $4}')"
-fi
 
 # ------------------------------------------------------------------------------
 # 3. Image Alias Resolution
@@ -322,7 +352,7 @@ echo "  - RAM Limit     : $RAM_SIZE"
 echo "  - Root Disk     : $DISK_SIZE"
 echo "  - Assigned IPv4 : $ASSIGNED_IPV4 / $SUBNET_CIDR_V4 (Gateway: $GATEWAY_IPV4)"
 echo "  - Assigned IPv6 : $ASSIGNED_IPV6 / $SUBNET_CIDR_V6 (Gateway: $GATEWAY_IPV6)"
-echo "  - Network Bridge: $NETWORK_NAME (Subnet aligned)"
+echo "  - Network Bridge: $NETWORK_NAME (Subnet verified)"
 echo "  - Admin User    : $ADMIN_USER"
 echo "  - SSH Key       : $(if [[ -n "$SSH_KEY" ]]; then echo "${SSH_KEY:0:25}... (${#SSH_KEY} chars)"; else echo "(none)"; fi)"
 echo "  - Lifetime      : $LIFETIME"
@@ -359,6 +389,8 @@ packages:
   - curl
   - htop
   - qemu-guest-agent
+runcmd:
+  - [ systemctl, enable, --now, qemu-guest-agent ]
 EOF
 
 # Cloud-Init Network Config (v2) with explicit static addresses & gateways + DHCP fallback
@@ -381,7 +413,6 @@ ethernets:
         - ${GATEWAY_IPV4}
         - 1.1.1.1
         - 8.8.8.8
-        - 2606:4700:4700::1111
     dhcp4: true
     dhcp6: true
     accept-ra: true
@@ -426,52 +457,51 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
 fi
 
 # Live Execution
-if incus info "$VM_NAME" &>/dev/null; then
+if "$INCUS_BIN" info "$VM_NAME" &>/dev/null; then
     log_error "An Incus instance with name '$VM_NAME' already exists."
     exit 1
 fi
 
 log_step "Step 1: Initializing VM instance '$VM_NAME' with image '$RESOLVED_IMAGE'..."
-incus init "$RESOLVED_IMAGE" "$VM_NAME" --vm
+"$INCUS_BIN" init "$RESOLVED_IMAGE" "$VM_NAME" --vm
 
 log_step "Step 2: Setting CPU limits ($CPU_COUNT cores)..."
-incus config set "$VM_NAME" limits.cpu="$CPU_COUNT"
+"$INCUS_BIN" config set "$VM_NAME" limits.cpu="$CPU_COUNT"
 
 log_step "Step 3: Setting RAM memory limits ($RAM_SIZE)..."
-incus config set "$VM_NAME" limits.memory="$RAM_SIZE"
+"$INCUS_BIN" config set "$VM_NAME" limits.memory="$RAM_SIZE"
 
 log_step "Step 4: Setting root disk size ($DISK_SIZE)..."
-incus config device override "$VM_NAME" root size="$DISK_SIZE" || incus config device set "$VM_NAME" root size="$DISK_SIZE"
+"$INCUS_BIN" config device override "$VM_NAME" root size="$DISK_SIZE" 2>/dev/null || "$INCUS_BIN" config device set "$VM_NAME" root size="$DISK_SIZE"
 
 log_step "Step 5: Binding dedicated IPv4 ($ASSIGNED_IPV4) & IPv6 ($ASSIGNED_IPV6) to NIC device..."
-if incus config show "$VM_NAME" --expanded 2>/dev/null | grep -q "eth0:"; then
-    # Override inherited eth0 device with static IP
-    incus config device override "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" ipv6.address="$ASSIGNED_IPV6" 2>/dev/null \
-    || incus config device set "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" ipv6.address="$ASSIGNED_IPV6" 2>/dev/null \
-    || incus config device override "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" 2>/dev/null \
-    || incus config device set "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" 2>/dev/null \
-    || log_warn "NIC static device binding skipped; network will configure via cloud-init and DHCP lease."
+if "$INCUS_BIN" config show "$VM_NAME" --expanded 2>/dev/null | grep -q "eth0:"; then
+    # Device exists in expanded profile -> override or set with key=value syntax
+    "$INCUS_BIN" config device override "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" ipv6.address="$ASSIGNED_IPV6" 2>/dev/null \
+    || "$INCUS_BIN" config device set "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" ipv6.address="$ASSIGNED_IPV6" 2>/dev/null \
+    || "$INCUS_BIN" config device override "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" 2>/dev/null \
+    || "$INCUS_BIN" config device set "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" 2>/dev/null || true
 else
-    incus config device add "$VM_NAME" eth0 nic network="$NETWORK_NAME" name=eth0 ipv4.address="$ASSIGNED_IPV4" ipv6.address="$ASSIGNED_IPV6" 2>/dev/null \
-    || incus config device add "$VM_NAME" eth0 nic network="$NETWORK_NAME" name=eth0 2>/dev/null || true
+    "$INCUS_BIN" config device add "$VM_NAME" eth0 nic network="$NETWORK_NAME" name=eth0 ipv4.address="$ASSIGNED_IPV4" ipv6.address="$ASSIGNED_IPV6" 2>/dev/null \
+    || "$INCUS_BIN" config device add "$VM_NAME" eth0 nic network="$NETWORK_NAME" name=eth0 2>/dev/null || true
 fi
 
 log_step "Step 6: Applying Dual-Stack static + DHCP network configuration..."
-incus config set "$VM_NAME" user.network-config - < "$TMP_NET_CONFIG"
+"$INCUS_BIN" config set "$VM_NAME" user.network-config - < "$TMP_NET_CONFIG"
 
 log_step "Step 7: Applying cloud-init user-data..."
-incus config set "$VM_NAME" user.user-data - < "$TMP_CLOUD_INIT"
+"$INCUS_BIN" config set "$VM_NAME" user.user-data - < "$TMP_CLOUD_INIT"
 
 log_step "Step 8: Setting metadata (vm_identifier=$VM_IDENTIFIER, lifetime=$LIFETIME)..."
-incus config set "$VM_NAME" user.vm_identifier="$VM_IDENTIFIER"
-incus config set "$VM_NAME" user.lifetime="$LIFETIME"
-incus config set "$VM_NAME" user.assigned_ipv4="$ASSIGNED_IPV4"
-incus config set "$VM_NAME" user.assigned_ipv6="$ASSIGNED_IPV6"
+"$INCUS_BIN" config set "$VM_NAME" user.vm_identifier="$VM_IDENTIFIER"
+"$INCUS_BIN" config set "$VM_NAME" user.lifetime="$LIFETIME"
+"$INCUS_BIN" config set "$VM_NAME" user.assigned_ipv4="$ASSIGNED_IPV4"
+"$INCUS_BIN" config set "$VM_NAME" user.assigned_ipv6="$ASSIGNED_IPV6"
 
 log_step "Step 9: Starting VM '$VM_NAME'..."
-incus start "$VM_NAME"
+"$INCUS_BIN" start "$VM_NAME"
 
 log_success "Workload '$VM_NAME' (ID: $VM_IDENTIFIER) launched successfully with dedicated IPv4 ($ASSIGNED_IPV4) and IPv6 ($ASSIGNED_IPV6)!"
 
 log_step "Current VM Status & Network Leases:"
-incus info "$VM_NAME" || true
+"$INCUS_BIN" info "$VM_NAME" || true

@@ -11,7 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DB_DIR = BASE_DIR / "data"
 DB_PATH = DB_DIR / "vms.db"
 
-# Default high-capacity /20 pool (10.100.0.0/20 -> 4,093 usable host IPs for 400+ VMs)
+# Default high-capacity /20 pool fallback
 DEFAULT_IPV4_NETWORK = "10.100.0.0/20"
 DEFAULT_IPV4_GATEWAY = "10.100.0.1"
 DEFAULT_IPV6_PREFIX = "fd42:100:100"
@@ -62,31 +62,47 @@ def init_db(db_path: Path = DB_PATH) -> None:
         conn.commit()
 
 
+def find_incus_bin() -> Optional[str]:
+    """Find the Incus CLI binary path."""
+    for candidate in [
+        shutil.which("incus"),
+        "/usr/local/bin/incus",
+        "/usr/bin/incus",
+        "/snap/bin/incus",
+        shutil.which("lxc"),
+        "/snap/bin/lxc"
+    ]:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    return None
+
+
 def detect_incus_network_subnet(network_name: str = "incusbr0") -> Tuple[str, str]:
     """
     Inspects active Incus bridge network if incus is present on host.
     Returns (ipv4_network_cidr, ipv6_prefix).
     """
-    incus_bin = shutil.which("incus")
+    incus_bin = find_incus_bin()
     if not incus_bin:
         return DEFAULT_IPV4_NETWORK, DEFAULT_IPV6_PREFIX
 
     try:
-        # Check if network exists
         res = subprocess.run([incus_bin, "network", "get", network_name, "ipv4.address"], capture_output=True, text=True, timeout=5)
         if res.returncode == 0 and res.stdout.strip():
             raw_v4 = res.stdout.strip()
-            # If raw_v4 is e.g. "10.0.8.1/24"
             if "/" in raw_v4 and raw_v4 not in ("none", "auto"):
                 ip_part, prefix = raw_v4.split("/")
-                # Convert gateway IP to network CIDR
                 net = ipaddress.IPv4Network(f"{ip_part}/{prefix}", strict=False)
-                # Check if IPv6 is configured
-                res_v6 = subprocess.run([incus_bin, "network", "get", network_name, "ipv6.address"], capture_output=True, text=True, timeout=5)
+                
+                # Check if IPv6 is configured on bridge
                 v6_prefix = DEFAULT_IPV6_PREFIX
+                res_v6 = subprocess.run([incus_bin, "network", "get", network_name, "ipv6.address"], capture_output=True, text=True, timeout=5)
                 if res_v6.returncode == 0 and "/" in res_v6.stdout:
                     v6_raw = res_v6.stdout.strip().split("/")[0]
-                    v6_prefix = ":".join(v6_raw.split(":")[:3]) if ":" in v6_raw else DEFAULT_IPV6_PREFIX
+                    # Take first 4 segments of IPv6 address
+                    parts = [p for p in v6_raw.split(":") if p]
+                    if len(parts) >= 3:
+                        v6_prefix = ":".join(parts[:4] if len(parts) >= 4 else parts[:3])
                 return str(net), v6_prefix
     except Exception:
         pass
@@ -128,14 +144,13 @@ def allocate_next_ip(
             continue
         if host_str not in used_ips:
             allocated_v4 = host_str
-            # Calculate offset from network base to generate a matching deterministic IPv6
             offset_index = int(host) - int(net.network_address)
             break
 
     if not allocated_v4:
         raise RuntimeError(f"Subnet pool {network_cidr} is completely exhausted!")
 
-    # Deterministic IPv6 address derived from host offset (e.g. fd42:100:100::1002)
+    # Deterministic IPv6 address derived from host offset
     allocated_v6 = f"{ipv6_prefix}::{offset_index:x}"
 
     return allocated_v4, allocated_v6
