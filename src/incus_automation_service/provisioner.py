@@ -53,6 +53,7 @@ class VMProvisioner:
             "bash",
             script_file_str,
             "--name", request.vm_name,
+            "--type", getattr(request, "instance_type", "container"),
             "--image", request.os_image,
             "--cpu", str(request.cpu_count),
             "--ram", str(request.ram_size),

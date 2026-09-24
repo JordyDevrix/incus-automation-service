@@ -1,24 +1,28 @@
 # Incus Automation Service
 
-A low-maintenance, single-source-of-truth Incus VM automation service featuring a **multi-step form wizard**, a direct **standalone bash provisioning pipeline**, and **SQLite retention tracking** (`vm_identifier` $\leftrightarrow$ `valid_thru`).
+A low-maintenance, single-source-of-truth Incus Container & VM automation service featuring a **multi-step form wizard**, a direct **standalone bash provisioning pipeline**, and **SQLite retention tracking** (`vm_identifier` $\leftrightarrow$ `valid_thru`).
 
 ## 🎯 Architecture & Key Features
 
 - **Single Source of Truth**: No YAML templates or config files to maintain. The provisioning logic lives solely in [`scripts/provision_vm.sh`](scripts/provision_vm.sh).
-- **High-Capacity /20 IP Allocation (Scales to 400+ Student VMs)**:
+- **Lightweight System Containers (Default) & VMs**:
+  - Provisions high-performance Incus system containers by default without VM virtualization overhead or guest agent dependencies.
+  - Full dual-stack IPv4/IPv6 networking with direct kernel namespace inspection for instant IP availability in `incus list`.
+  - Supports `--type vm` when full QEMU/KVM hardware virtualization is required.
+- **High-Capacity /20 IP Allocation (Scales to 400+ Workloads)**:
   - Default pool `10.100.0.0/20` provides **4,093 distinct IPv4 addresses** with zero collision risk.
   - Dual redundancy: Binds static `ipv4.address` & `ipv6.address` to the Incus NIC device AND provisions cloud-init static routes + DHCP fallback.
   - Automatically manages IP reservations and releases freed IPs upon deletion in `data/vms.db`.
 - **Page-by-Page Form Wizard**:
-  - **Step 1: Workload Identity**: VM name validation, OS image selector (Ubuntu, Debian, Alpine, Arch, Custom), and unique VM identifier.
+  - **Step 1: Workload Identity**: Container vs VM selection, instance name validation, OS image selector (Ubuntu, Debian, Alpine, Arch, Custom), and unique workload identifier.
   - **Step 2: Hardware Resources**: Quick presets (*Small*, *Medium*, *Large*) and custom CPU, RAM, and Disk allocations.
   - **Step 3: Access & Auth**: Admin cloud-init user and SSH public key input.
   - **Step 4: Lifetime & Retention**: Expiration duration (`24h`, `7d`, `30d`, `persistent`) with real-time `valid_thru` date calculation.
   - **Step 5: Review & Provision**: Command preview, execution logs terminal, and SQLite registration.
 - **SQLite Database Tracking**:
-  - Automatically records `vm_identifier`, `valid_thru`, `vm_name`, `created_at`, and `status` in `data/vms.db`.
+  - Automatically records `vm_identifier`, `ipv4_address`, `ipv6_address`, `valid_thru`, `vm_name`, `created_at`, and `status` in `data/vms.db`.
 - **Periodic Cleanup Script**:
-  - Includes [`scripts/cleanup_expired_vms.sh`](scripts/cleanup_expired_vms.sh) for cron/systemd timers to delete expired VMs based on the SQLite `valid_thru` timestamp.
+  - Includes [`scripts/cleanup_expired_vms.sh`](scripts/cleanup_expired_vms.sh) for cron/systemd timers to delete expired instances based on the SQLite `valid_thru` timestamp.
 
 ---
 

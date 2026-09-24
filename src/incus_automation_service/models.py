@@ -4,13 +4,17 @@ from pydantic import BaseModel, Field
 
 
 class VMProvisionRequest(BaseModel):
-    """Payload for provisioning a new Incus VM."""
+    """Payload for provisioning a new Incus container or VM."""
     vm_name: str = Field(
         default="web-server-01",
-        description="Name of the Incus VM instance",
+        description="Name of the Incus instance",
         min_length=1,
         max_length=64,
         pattern=r"^[a-zA-Z0-9][a-zA-Z0-9\._-]*$"
+    )
+    instance_type: str = Field(
+        default="container",
+        description="Workload type: 'container' (default, lightweight system container) or 'vm' (virtual machine)"
     )
     os_image: str = Field(
         default="ubuntu-24.04",

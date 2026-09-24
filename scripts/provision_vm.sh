@@ -41,6 +41,7 @@ log_step() {
 # ------------------------------------------------------------------------------
 VM_NAME="${INSTANCE_VM_NAME:-}"
 OS_IMAGE="${INSTANCE_OS_IMAGE:-ubuntu-24.04}"
+INSTANCE_TYPE="${INSTANCE_TYPE:-container}"
 CPU_COUNT="${INSTANCE_CPU_COUNT:-2}"
 RAM_SIZE="${INSTANCE_RAM_SIZE:-4GiB}"
 DISK_SIZE="${INSTANCE_DISK_SIZE:-40GiB}"
@@ -65,7 +66,8 @@ usage() {
 Usage: $0 [OPTIONS]
 
 Options:
-  -n, --name NAME             VM Instance Name (required)
+  -n, --name NAME             Instance Name (required)
+  -t, --type TYPE             Workload type: container (default) or vm
   -i, --image IMAGE           OS Image (default: ubuntu-24.04)
   -c, --cpu CORES             CPU cores count (default: 2)
   -m, --ram RAM               RAM memory size (e.g. 4GiB, default: 4GiB)
@@ -78,7 +80,7 @@ Options:
       --network NAME          Incus Network bridge name (default: incusbr0)
       --gateway-v4 IP         IPv4 Gateway (default: 10.100.0.1)
       --gateway-v6 IP         IPv6 Gateway (default: fd42:100:100::1)
-      --vm-id ID              Unique VM Identifier (default: same as VM name)
+      --vm-id ID              Unique Workload Identifier (default: same as instance name)
       --dry-run               Simulate provisioning without modifying Incus host
   -h, --help                  Show this help message
 
@@ -90,6 +92,10 @@ EOF
 # Parse CLI arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -t|--type|--instance-type)
+            INSTANCE_TYPE="$2"
+            shift 2
+            ;;
         -n|--name)
             VM_NAME="$2"
             shift 2
@@ -344,10 +350,11 @@ esac
 # 4. Print Provisioning Plan
 # ------------------------------------------------------------------------------
 log_info "=========================================="
-log_info "Incus VM High-Capacity Provisioning Plan"
+log_info "Incus High-Capacity Provisioning Plan"
 log_info "=========================================="
-echo "  - VM Identifier : $VM_IDENTIFIER"
-echo "  - VM Name       : $VM_NAME"
+echo "  - Workload Type : $INSTANCE_TYPE"
+echo "  - Identifier    : $VM_IDENTIFIER"
+echo "  - Instance Name : $VM_NAME"
 echo "  - OS Image      : $OS_IMAGE (Resolved: $RESOLVED_IMAGE)"
 echo "  - CPU Limit     : $CPU_COUNT cores"
 echo "  - RAM Limit     : $RAM_SIZE"
@@ -390,10 +397,15 @@ package_update: true
 packages:
   - curl
   - htop
+EOF
+
+if [[ "$INSTANCE_TYPE" == "vm" ]]; then
+    cat <<EOF >> "$TMP_CLOUD_INIT"
   - qemu-guest-agent
 runcmd:
   - [ systemctl, enable, --now, qemu-guest-agent ]
 EOF
+fi
 
 # Cloud-Init Network Config (v2) with explicit static addresses & gateways + DHCP fallback
 cat <<EOF > "$TMP_NET_CONFIG"
@@ -424,8 +436,12 @@ EOF
 # 6. Execute Provisioning
 # ------------------------------------------------------------------------------
 if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
-    log_step "[DRY-RUN] Step 1: Initializing VM instance"
-    echo "  >> incus init \"$RESOLVED_IMAGE\" \"$VM_NAME\" --vm"
+    log_step "[DRY-RUN] Step 1: Initializing $INSTANCE_TYPE instance"
+    if [[ "$INSTANCE_TYPE" == "vm" ]]; then
+        echo "  >> incus init \"$RESOLVED_IMAGE\" \"$VM_NAME\" --vm"
+    else
+        echo "  >> incus init \"$RESOLVED_IMAGE\" \"$VM_NAME\""
+    fi
     
     log_step "[DRY-RUN] Step 2: Configuring CPU limit"
     echo "  >> incus config set \"$VM_NAME\" limits.cpu=\"$CPU_COUNT\""
@@ -440,21 +456,22 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo "  >> incus config device override \"$VM_NAME\" eth0 ipv4.address=\"$ASSIGNED_IPV4\" ipv6.address=\"$ASSIGNED_IPV6\""
     
     log_step "[DRY-RUN] Step 6: Setting Cloud-Init Dual-Stack Network Config"
-    echo "  >> incus config set \"$VM_NAME\" user.network-config < (addresses: [$ASSIGNED_IPV4/$SUBNET_CIDR_V4, $ASSIGNED_IPV6/$SUBNET_CIDR_V6])"
+    echo "  >> incus config set \"$VM_NAME\" user.network-config=- < (addresses: [$ASSIGNED_IPV4/$SUBNET_CIDR_V4, $ASSIGNED_IPV6/$SUBNET_CIDR_V6])"
     
     log_step "[DRY-RUN] Step 7: Applying Cloud-Init User Data & SSH keys"
-    echo "  >> incus config set \"$VM_NAME\" user.user-data < cloud-init"
+    echo "  >> incus config set \"$VM_NAME\" user.user-data=- < cloud-init"
     
-    log_step "[DRY-RUN] Step 8: Setting VM Identifier and Lifetime Metadata"
+    log_step "[DRY-RUN] Step 8: Setting Identifier, Type, and Lifetime Metadata"
     echo "  >> incus config set \"$VM_NAME\" user.vm_identifier=\"$VM_IDENTIFIER\""
+    echo "  >> incus config set \"$VM_NAME\" user.instance_type=\"$INSTANCE_TYPE\""
     echo "  >> incus config set \"$VM_NAME\" user.lifetime=\"$LIFETIME\""
     echo "  >> incus config set \"$VM_NAME\" user.assigned_ipv4=\"$ASSIGNED_IPV4\""
     echo "  >> incus config set \"$VM_NAME\" user.assigned_ipv6=\"$ASSIGNED_IPV6\""
     
-    log_step "[DRY-RUN] Step 9: Starting VM instance"
+    log_step "[DRY-RUN] Step 9: Starting $INSTANCE_TYPE instance"
     echo "  >> incus start \"$VM_NAME\""
 
-    log_success "[DRY-RUN] Workload '$VM_NAME' (ID: $VM_IDENTIFIER) verified with dedicated IPv4: $ASSIGNED_IPV4 and IPv6: $ASSIGNED_IPV6."
+    log_success "[DRY-RUN] Workload '$VM_NAME' (ID: $VM_IDENTIFIER, Type: $INSTANCE_TYPE) verified with dedicated IPv4: $ASSIGNED_IPV4 and IPv6: $ASSIGNED_IPV6."
     exit 0
 fi
 
@@ -464,8 +481,12 @@ if "$INCUS_BIN" info "$VM_NAME" &>/dev/null; then
     exit 1
 fi
 
-log_step "Step 1: Initializing VM instance '$VM_NAME' with image '$RESOLVED_IMAGE'..."
-"$INCUS_BIN" init "$RESOLVED_IMAGE" "$VM_NAME" --vm
+log_step "Step 1: Initializing $INSTANCE_TYPE instance '$VM_NAME' with image '$RESOLVED_IMAGE'..."
+if [[ "$INSTANCE_TYPE" == "vm" ]]; then
+    "$INCUS_BIN" init "$RESOLVED_IMAGE" "$VM_NAME" --vm
+else
+    "$INCUS_BIN" init "$RESOLVED_IMAGE" "$VM_NAME"
+fi
 
 log_step "Step 2: Setting CPU limits ($CPU_COUNT cores)..."
 "$INCUS_BIN" config set "$VM_NAME" limits.cpu="$CPU_COUNT"
@@ -489,21 +510,22 @@ else
 fi
 
 log_step "Step 6: Applying Dual-Stack static + DHCP network configuration..."
-"$INCUS_BIN" config set "$VM_NAME" user.network-config - < "$TMP_NET_CONFIG"
+"$INCUS_BIN" config set "$VM_NAME" user.network-config=- < "$TMP_NET_CONFIG"
 
 log_step "Step 7: Applying cloud-init user-data..."
-"$INCUS_BIN" config set "$VM_NAME" user.user-data - < "$TMP_CLOUD_INIT"
+"$INCUS_BIN" config set "$VM_NAME" user.user-data=- < "$TMP_CLOUD_INIT"
 
-log_step "Step 8: Setting metadata (vm_identifier=$VM_IDENTIFIER, lifetime=$LIFETIME)..."
+log_step "Step 8: Setting metadata (vm_identifier=$VM_IDENTIFIER, lifetime=$LIFETIME, instance_type=$INSTANCE_TYPE)..."
 "$INCUS_BIN" config set "$VM_NAME" user.vm_identifier="$VM_IDENTIFIER"
+"$INCUS_BIN" config set "$VM_NAME" user.instance_type="$INSTANCE_TYPE"
 "$INCUS_BIN" config set "$VM_NAME" user.lifetime="$LIFETIME"
 "$INCUS_BIN" config set "$VM_NAME" user.assigned_ipv4="$ASSIGNED_IPV4"
 "$INCUS_BIN" config set "$VM_NAME" user.assigned_ipv6="$ASSIGNED_IPV6"
 
-log_step "Step 9: Starting VM '$VM_NAME'..."
+log_step "Step 9: Starting $INSTANCE_TYPE '$VM_NAME'..."
 "$INCUS_BIN" start "$VM_NAME"
 
-log_success "Workload '$VM_NAME' (ID: $VM_IDENTIFIER) launched successfully with dedicated IPv4 ($ASSIGNED_IPV4) and IPv6 ($ASSIGNED_IPV6)!"
+log_success "Workload '$VM_NAME' (ID: $VM_IDENTIFIER) launched successfully as $INSTANCE_TYPE with dedicated IPv4 ($ASSIGNED_IPV4) and IPv6 ($ASSIGNED_IPV6)!"
 
-log_step "Current VM Status & Network Leases:"
+log_step "Current $INSTANCE_TYPE Status & Network Leases:"
 "$INCUS_BIN" info "$VM_NAME" || true

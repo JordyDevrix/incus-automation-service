@@ -5,10 +5,11 @@ from incus_automation_service.models import VMProvisionRequest
 
 
 @pytest.mark.asyncio
-async def test_provisioner_dry_run():
+async def test_provisioner_container_dry_run():
     req = VMProvisionRequest(
-        vm_name="test-direct-vm",
-        vm_identifier="test-direct-vm-12345",
+        vm_name="test-direct-cntr",
+        vm_identifier="test-direct-cntr-12345",
+        instance_type="container",
         os_image="ubuntu-24.04",
         cpu_count="2",
         ram_size="4GiB",
@@ -25,9 +26,33 @@ async def test_provisioner_dry_run():
     assert result.success is True
     assert result.exit_code == 0
     assert result.dry_run is True
-    assert result.vm_identifier == "test-direct-vm-12345"
+    assert result.vm_identifier == "test-direct-cntr-12345"
     assert result.ipv4_address is not None
     assert result.ipv6_address is not None
-    assert "test-direct-vm" in result.stdout
+    assert "test-direct-cntr" in result.stdout
+    assert "incus init \"images:ubuntu/24.04/cloud\" \"test-direct-cntr\"" in result.stdout
+    assert "--vm" not in result.stdout
     assert "limits.cpu" in result.stdout
     assert "10.100." in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_provisioner_vm_mode_dry_run():
+    req = VMProvisionRequest(
+        vm_name="test-direct-vm",
+        vm_identifier="test-direct-vm-12345",
+        instance_type="vm",
+        os_image="ubuntu-24.04",
+        cpu_count="2",
+        ram_size="4GiB",
+        disk_size="40GiB",
+        lifetime="7d",
+        dry_run=True
+    )
+    
+    provisioner = VMProvisioner()
+    result = await provisioner.execute_async(req)
+    
+    assert result.success is True
+    assert result.exit_code == 0
+    assert "--vm" in result.stdout

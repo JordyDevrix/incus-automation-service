@@ -79,7 +79,7 @@ def preview_vm_command(payload: VMProvisionRequest):
             ipv4 = ipv4 or "10.100.0.10"
             ipv6 = ipv6 or "fd42:100:100::10"
 
-    cmd = f"bash scripts/provision_vm.sh --name '{payload.vm_name}' --image '{payload.os_image}' --cpu '{payload.cpu_count}' --ram '{payload.ram_size}' --disk '{payload.disk_size}' --user '{payload.admin_user}' --lifetime '{payload.lifetime}' --vm-id '{vm_id}' --ipv4 '{ipv4}' --ipv6 '{ipv6}'"
+    cmd = f"bash scripts/provision_vm.sh --name '{payload.vm_name}' --type '{payload.instance_type}' --image '{payload.os_image}' --cpu '{payload.cpu_count}' --ram '{payload.ram_size}' --disk '{payload.disk_size}' --user '{payload.admin_user}' --lifetime '{payload.lifetime}' --vm-id '{vm_id}' --ipv4 '{ipv4}' --ipv6 '{ipv6}'"
     if payload.dry_run:
         cmd += " --dry-run"
 

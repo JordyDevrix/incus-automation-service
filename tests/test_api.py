@@ -20,6 +20,7 @@ def test_index_page():
 def test_preview_command():
     payload = {
         "vm_name": "preview-srv-01",
+        "instance_type": "container",
         "os_image": "debian-12",
         "cpu_count": "4",
         "ram_size": "8GiB",
@@ -31,6 +32,7 @@ def test_preview_command():
     data = response.json()
     assert "preview-srv-01" in data["vm_identifier"]
     assert "scripts/provision_vm.sh" in data["command_preview"]
+    assert "--type 'container'" in data["command_preview"]
     assert data["ipv4_address"] is not None
     assert data["ipv6_address"] is not None
     assert "--ipv4" in data["command_preview"]
