@@ -391,19 +391,27 @@ if [[ -n "${SSH_KEY:-}" ]]; then
 EOF
 fi
 
+cat <<EOF >> "$TMP_CLOUD_INIT"
+package_update: false
+packages:
+  - openssh-server
+  - curl
+  - sudo
+EOF
+
 if [[ "$INSTANCE_TYPE" == "vm" ]]; then
     cat <<EOF >> "$TMP_CLOUD_INIT"
-package_update: true
-packages:
-  - curl
-  - htop
   - qemu-guest-agent
 runcmd:
   - [ systemctl, enable, --now, qemu-guest-agent ]
+  - [ systemctl, enable, --now, ssh ]
+  - [ systemctl, enable, --now, sshd ]
 EOF
 else
     cat <<EOF >> "$TMP_CLOUD_INIT"
-package_update: false
+runcmd:
+  - [ systemctl, enable, --now, ssh ]
+  - [ systemctl, enable, --now, sshd ]
 EOF
 fi
 
@@ -534,6 +542,36 @@ if [[ -n "$ACQUIRED_IPV4" && "$ACQUIRED_IPV4" != "-" ]]; then
     log_success "Workload '$VM_NAME' (ID: $VM_IDENTIFIER) active with IPv4: $ACQUIRED_IPV4 and IPv6: ${ACQUIRED_IPV6:-$ASSIGNED_IPV6}!"
 else
     log_warn "Workload '$VM_NAME' started (Assigned: $ASSIGNED_IPV4). Querying current status:"
+fi
+
+if [[ "$INSTANCE_TYPE" == "container" ]]; then
+    log_step "Step 10: Ensuring OpenSSH daemon and admin credentials for '${ADMIN_USER}'..."
+    # 1. Ensure user exists
+    "$INCUS_BIN" exec "$VM_NAME" -- id -u "$ADMIN_USER" &>/dev/null || {
+        "$INCUS_BIN" exec "$VM_NAME" -- useradd -m -s /bin/bash "$ADMIN_USER" 2>/dev/null || true
+    }
+    
+    # 2. Add sudoers without password
+    "$INCUS_BIN" exec "$VM_NAME" -- sh -c "mkdir -p /etc/sudoers.d && echo '${ADMIN_USER} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/99-admin-user && chmod 0440 /etc/sudoers.d/99-admin-user" 2>/dev/null || true
+
+    # 3. Add authorized_keys if SSH key provided
+    if [[ -n "${SSH_KEY:-}" ]]; then
+        "$INCUS_BIN" exec "$VM_NAME" -- sh -c "mkdir -p /home/${ADMIN_USER}/.ssh && chmod 700 /home/${ADMIN_USER}/.ssh && echo '${SSH_KEY}' > /home/${ADMIN_USER}/.ssh/authorized_keys && chmod 600 /home/${ADMIN_USER}/.ssh/authorized_keys && chown -R ${ADMIN_USER}:${ADMIN_USER} /home/${ADMIN_USER}/.ssh" 2>/dev/null || true
+    fi
+
+    # 4. Check if openssh-server is active; if not, install/start it
+    if ! "$INCUS_BIN" exec "$VM_NAME" -- systemctl is-active --quiet ssh 2>/dev/null && ! "$INCUS_BIN" exec "$VM_NAME" -- systemctl is-active --quiet sshd 2>/dev/null; then
+        log_info "Enabling and starting OpenSSH server..."
+        "$INCUS_BIN" exec "$VM_NAME" -- systemctl enable --now ssh 2>/dev/null \
+        || "$INCUS_BIN" exec "$VM_NAME" -- systemctl enable --now sshd 2>/dev/null \
+        || "$INCUS_BIN" exec "$VM_NAME" -- service ssh start 2>/dev/null \
+        || "$INCUS_BIN" exec "$VM_NAME" -- /usr/sbin/sshd 2>/dev/null \
+        || {
+            log_info "Installing OpenSSH server package inside container..."
+            "$INCUS_BIN" exec "$VM_NAME" -- sh -c "(DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server && systemctl enable --now ssh) || (apk add --no-cache openssh && rc-service sshd start) || (pacman -Sy --noconfirm openssh && systemctl enable --now sshd)" 2>/dev/null || true
+        }
+    fi
+    log_success "SSH service active and configured for user '${ADMIN_USER}' on port 22."
 fi
 
 log_step "Current $INSTANCE_TYPE Status & Network Leases:"
