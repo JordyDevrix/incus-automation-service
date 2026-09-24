@@ -368,13 +368,12 @@ echo "  - Lifetime      : $LIFETIME"
 echo "  - Dry Run Mode  : $DRY_RUN"
 
 # ------------------------------------------------------------------------------
-# 5. Prepare Cloud-Init User Data & Dual-Redundancy Network Configuration
+# 5. Prepare Cloud-Init User Data
 # ------------------------------------------------------------------------------
 TMP_CLOUD_INIT=$(mktemp /tmp/cloud-init-XXXXXX.yml)
-TMP_NET_CONFIG=$(mktemp /tmp/cloud-net-XXXXXX.yml)
-trap 'rm -f "$TMP_CLOUD_INIT" "$TMP_NET_CONFIG"' EXIT
+trap 'rm -f "$TMP_CLOUD_INIT"' EXIT
 
-# Cloud-Init User Data
+# Cloud-Init User Data for user/auth setup
 cat <<EOF > "$TMP_CLOUD_INIT"
 #cloud-config
 users:
@@ -392,45 +391,21 @@ if [[ -n "${SSH_KEY:-}" ]]; then
 EOF
 fi
 
-cat <<EOF >> "$TMP_CLOUD_INIT"
+if [[ "$INSTANCE_TYPE" == "vm" ]]; then
+    cat <<EOF >> "$TMP_CLOUD_INIT"
 package_update: true
 packages:
   - curl
   - htop
-EOF
-
-if [[ "$INSTANCE_TYPE" == "vm" ]]; then
-    cat <<EOF >> "$TMP_CLOUD_INIT"
   - qemu-guest-agent
 runcmd:
   - [ systemctl, enable, --now, qemu-guest-agent ]
 EOF
-fi
-
-# Cloud-Init Network Config (v2) with explicit static addresses & gateways + DHCP fallback
-cat <<EOF > "$TMP_NET_CONFIG"
-version: 2
-ethernets:
-  all-interfaces:
-    match:
-      name: "en*|eth*"
-    addresses:
-      - ${ASSIGNED_IPV4}/${SUBNET_CIDR_V4}
-      - ${ASSIGNED_IPV6}/${SUBNET_CIDR_V6}
-    routes:
-      - to: default
-        via: ${GATEWAY_IPV4}
-      - to: default
-        via: ${GATEWAY_IPV6}
-    nameservers:
-      addresses:
-        - ${GATEWAY_IPV4}
-        - 1.1.1.1
-        - 8.8.8.8
-    dhcp4: true
-    dhcp6: true
-    accept-ra: true
+else
+    cat <<EOF >> "$TMP_CLOUD_INIT"
+package_update: false
 EOF
+fi
 
 # ------------------------------------------------------------------------------
 # 6. Execute Provisioning
@@ -455,21 +430,19 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     log_step "[DRY-RUN] Step 5: Binding static IPv4 ($ASSIGNED_IPV4) and IPv6 ($ASSIGNED_IPV6) to NIC device"
     echo "  >> incus config device override \"$VM_NAME\" eth0 ipv4.address=\"$ASSIGNED_IPV4\" ipv6.address=\"$ASSIGNED_IPV6\""
     
-    log_step "[DRY-RUN] Step 6: Setting Cloud-Init Dual-Stack Network Config"
-    echo "  >> incus config set \"$VM_NAME\" user.network-config=- < (addresses: [$ASSIGNED_IPV4/$SUBNET_CIDR_V4, $ASSIGNED_IPV6/$SUBNET_CIDR_V6])"
-    
-    log_step "[DRY-RUN] Step 7: Applying Cloud-Init User Data & SSH keys"
+    log_step "[DRY-RUN] Step 6: Applying Cloud-Init User Data & SSH keys"
     echo "  >> incus config set \"$VM_NAME\" user.user-data=- < cloud-init"
     
-    log_step "[DRY-RUN] Step 8: Setting Identifier, Type, and Lifetime Metadata"
+    log_step "[DRY-RUN] Step 7: Setting Identifier, Type, and Lifetime Metadata"
     echo "  >> incus config set \"$VM_NAME\" user.vm_identifier=\"$VM_IDENTIFIER\""
     echo "  >> incus config set \"$VM_NAME\" user.instance_type=\"$INSTANCE_TYPE\""
     echo "  >> incus config set \"$VM_NAME\" user.lifetime=\"$LIFETIME\""
     echo "  >> incus config set \"$VM_NAME\" user.assigned_ipv4=\"$ASSIGNED_IPV4\""
     echo "  >> incus config set \"$VM_NAME\" user.assigned_ipv6=\"$ASSIGNED_IPV6\""
     
-    log_step "[DRY-RUN] Step 9: Starting $INSTANCE_TYPE instance"
+    log_step "[DRY-RUN] Step 8: Starting $INSTANCE_TYPE instance and verifying network lease"
     echo "  >> incus start \"$VM_NAME\""
+    echo "  >> [Simulated] Verified active IPv4: $ASSIGNED_IPV4 (eth0)"
 
     log_success "[DRY-RUN] Workload '$VM_NAME' (ID: $VM_IDENTIFIER, Type: $INSTANCE_TYPE) verified with dedicated IPv4: $ASSIGNED_IPV4 and IPv6: $ASSIGNED_IPV6."
     exit 0
@@ -509,23 +482,59 @@ else
     || "$INCUS_BIN" config device add "$VM_NAME" eth0 nic network="$NETWORK_NAME" name=eth0 2>/dev/null || true
 fi
 
-log_step "Step 6: Applying Dual-Stack static + DHCP network configuration..."
-"$INCUS_BIN" config set "$VM_NAME" user.network-config=- < "$TMP_NET_CONFIG"
-
-log_step "Step 7: Applying cloud-init user-data..."
+log_step "Step 6: Applying cloud-init user-data..."
 "$INCUS_BIN" config set "$VM_NAME" user.user-data=- < "$TMP_CLOUD_INIT"
 
-log_step "Step 8: Setting metadata (vm_identifier=$VM_IDENTIFIER, lifetime=$LIFETIME, instance_type=$INSTANCE_TYPE)..."
+log_step "Step 7: Setting metadata (vm_identifier=$VM_IDENTIFIER, lifetime=$LIFETIME, instance_type=$INSTANCE_TYPE)..."
 "$INCUS_BIN" config set "$VM_NAME" user.vm_identifier="$VM_IDENTIFIER"
 "$INCUS_BIN" config set "$VM_NAME" user.instance_type="$INSTANCE_TYPE"
 "$INCUS_BIN" config set "$VM_NAME" user.lifetime="$LIFETIME"
 "$INCUS_BIN" config set "$VM_NAME" user.assigned_ipv4="$ASSIGNED_IPV4"
 "$INCUS_BIN" config set "$VM_NAME" user.assigned_ipv6="$ASSIGNED_IPV6"
 
-log_step "Step 9: Starting $INSTANCE_TYPE '$VM_NAME'..."
+log_step "Step 8: Starting $INSTANCE_TYPE '$VM_NAME'..."
 "$INCUS_BIN" start "$VM_NAME"
 
-log_success "Workload '$VM_NAME' (ID: $VM_IDENTIFIER) launched successfully as $INSTANCE_TYPE with dedicated IPv4 ($ASSIGNED_IPV4) and IPv6 ($ASSIGNED_IPV6)!"
+log_step "Step 9: Waiting for instance to acquire dedicated IPv4 ($ASSIGNED_IPV4)..."
+ACQUIRED_IPV4=""
+ACQUIRED_IPV6=""
+for ((attempt=1; attempt<=25; attempt++)); do
+    IP_CSV="$("$INCUS_BIN" list "^${VM_NAME}$" --format csv -c 4,6 2>/dev/null || true)"
+    V4_RAW="$(echo "$IP_CSV" | awk -F',' '{print $1}' | awk '{print $1}' | tr -d ' ' || true)"
+    V6_RAW="$(echo "$IP_CSV" | awk -F',' '{print $2}' | awk '{print $1}' | tr -d ' ' || true)"
+    
+    if [[ -n "$V4_RAW" && "$V4_RAW" != "-" && "$V4_RAW" != "127.0.0.1" ]]; then
+        ACQUIRED_IPV4="$V4_RAW"
+        ACQUIRED_IPV6="$V6_RAW"
+        break
+    fi
+
+    # At 5 seconds, if IP has not appeared yet, trigger container networking if container
+    if [[ $attempt -eq 5 && "$INSTANCE_TYPE" == "container" ]]; then
+        log_info "Activating container network interface..."
+        "$INCUS_BIN" exec "$VM_NAME" -- ip link set eth0 up 2>/dev/null || true
+        "$INCUS_BIN" exec "$VM_NAME" -- dhclient -4 eth0 2>/dev/null \
+        || "$INCUS_BIN" exec "$VM_NAME" -- udhcpc -i eth0 2>/dev/null \
+        || "$INCUS_BIN" exec "$VM_NAME" -- systemctl restart systemd-networkd 2>/dev/null \
+        || "$INCUS_BIN" exec "$VM_NAME" -- systemctl restart networking 2>/dev/null \
+        || true
+    fi
+
+    # At 10 seconds, fallback to direct IP assignment on eth0 inside container
+    if [[ $attempt -eq 10 && "$INSTANCE_TYPE" == "container" ]]; then
+        log_info "Ensuring IP on eth0 directly..."
+        "$INCUS_BIN" exec "$VM_NAME" -- ip addr add "${ASSIGNED_IPV4}/${SUBNET_CIDR_V4}" dev eth0 2>/dev/null || true
+        "$INCUS_BIN" exec "$VM_NAME" -- ip route add default via "${GATEWAY_IPV4}" dev eth0 2>/dev/null || true
+    fi
+
+    sleep 1
+done
+
+if [[ -n "$ACQUIRED_IPV4" && "$ACQUIRED_IPV4" != "-" ]]; then
+    log_success "Workload '$VM_NAME' (ID: $VM_IDENTIFIER) active with IPv4: $ACQUIRED_IPV4 and IPv6: ${ACQUIRED_IPV6:-$ASSIGNED_IPV6}!"
+else
+    log_warn "Workload '$VM_NAME' started (Assigned: $ASSIGNED_IPV4). Querying current status:"
+fi
 
 log_step "Current $INSTANCE_TYPE Status & Network Leases:"
-"$INCUS_BIN" info "$VM_NAME" || true
+"$INCUS_BIN" list "^${VM_NAME}$" || "$INCUS_BIN" info "$VM_NAME" || true
