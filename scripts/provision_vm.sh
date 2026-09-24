@@ -2,7 +2,8 @@
 # ==============================================================================
 # Script: provision_vm.sh
 # Description: Provisions an Incus VM directly from command-line arguments.
-# Single source of truth for Incus VM creation, resource configuration, and cloud-init.
+# Single source of truth for Incus VM creation, resource configuration, cloud-init,
+# and automatic IPv4 + IPv6 dual-stack network assignment.
 # ==============================================================================
 
 set -euo pipefail
@@ -47,6 +48,7 @@ SSH_KEY="${INSTANCE_ADMIN_SSH_KEY:-}"
 ADMIN_USER="${INSTANCE_ADMIN_USER:-admin}"
 LIFETIME="${INSTANCE_LIFETIME:-7d}"
 VM_IDENTIFIER="${VM_IDENTIFIER:-}"
+NETWORK_NAME="${INSTANCE_NETWORK:-incusbr0}"
 DRY_RUN="${DRY_RUN:-0}"
 
 usage() {
@@ -62,6 +64,7 @@ Options:
   -k, --ssh-key KEY           Admin SSH public key
   -u, --user USERNAME         Admin username (default: admin)
   -l, --lifetime DURATION     Lifetime (e.g. 7d, 24h, persistent, default: 7d)
+      --network NAME          Incus Network bridge name (default: incusbr0)
       --vm-id ID              Unique VM Identifier (default: same as VM name)
       --dry-run               Simulate provisioning without modifying Incus host
   -h, --help                  Show this help message
@@ -104,6 +107,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -l|--lifetime)
             LIFETIME="$2"
+            shift 2
+            ;;
+        --network)
+            NETWORK_NAME="$2"
             shift 2
             ;;
         --vm-id)
@@ -174,6 +181,8 @@ echo "  - OS Image      : $OS_IMAGE (Resolved: $RESOLVED_IMAGE)"
 echo "  - CPU Limit     : $CPU_COUNT cores"
 echo "  - RAM Limit     : $RAM_SIZE"
 echo "  - Root Disk     : $DISK_SIZE"
+echo "  - Networking    : Auto-assign IPv4 (DHCP) + IPv6 (SLAAC / DHCPv6)"
+echo "  - Network Bridge: $NETWORK_NAME"
 echo "  - Admin User    : $ADMIN_USER"
 echo "  - SSH Key       : $(if [[ -n "$SSH_KEY" ]]; then echo "${SSH_KEY:0:25}... (${#SSH_KEY} chars)"; else echo "(none)"; fi)"
 echo "  - Lifetime      : $LIFETIME"
@@ -193,11 +202,13 @@ elif [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 5. Prepare Cloud-Init User Data
+# 5. Prepare Cloud-Init User Data & Network Configuration
 # ------------------------------------------------------------------------------
 TMP_CLOUD_INIT=$(mktemp /tmp/cloud-init-XXXXXX.yml)
-trap 'rm -f "$TMP_CLOUD_INIT"' EXIT
+TMP_NET_CONFIG=$(mktemp /tmp/cloud-net-XXXXXX.yml)
+trap 'rm -f "$TMP_CLOUD_INIT" "$TMP_NET_CONFIG"' EXIT
 
+# Cloud-Init User Data
 cat <<EOF > "$TMP_CLOUD_INIT"
 #cloud-config
 users:
@@ -223,6 +234,18 @@ packages:
   - qemu-guest-agent
 EOF
 
+# Cloud-Init Network Config (v2) for Auto-assign IPv4 & IPv6
+cat <<EOF > "$TMP_NET_CONFIG"
+version: 2
+ethernets:
+  all-interfaces:
+    match:
+      name: "en*|eth*"
+    dhcp4: true
+    dhcp6: true
+    accept-ra: true
+EOF
+
 # ------------------------------------------------------------------------------
 # 6. Execute Provisioning
 # ------------------------------------------------------------------------------
@@ -239,17 +262,20 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     log_step "[DRY-RUN] Step 4: Configuring Root Disk size"
     echo "  >> incus config device override \"$VM_NAME\" root size=\"$DISK_SIZE\""
     
-    log_step "[DRY-RUN] Step 5: Applying Cloud-Init User Data & SSH keys"
+    log_step "[DRY-RUN] Step 5: Configuring Dual-Stack IPv4 & IPv6 Auto-Assignment"
+    echo "  >> incus config set \"$VM_NAME\" user.network-config < (dhcp4: true, dhcp6: true, accept-ra: true)"
+    
+    log_step "[DRY-RUN] Step 6: Applying Cloud-Init User Data & SSH keys"
     echo "  >> incus config set \"$VM_NAME\" user.user-data < cloud-init"
     
-    log_step "[DRY-RUN] Step 6: Setting VM Identifier and Lifetime Metadata"
+    log_step "[DRY-RUN] Step 7: Setting VM Identifier and Lifetime Metadata"
     echo "  >> incus config set \"$VM_NAME\" user.vm_identifier=\"$VM_IDENTIFIER\""
     echo "  >> incus config set \"$VM_NAME\" user.lifetime=\"$LIFETIME\""
     
-    log_step "[DRY-RUN] Step 7: Starting VM instance"
+    log_step "[DRY-RUN] Step 8: Starting VM instance"
     echo "  >> incus start \"$VM_NAME\""
 
-    log_success "[DRY-RUN] Workload '$VM_NAME' (ID: $VM_IDENTIFIER) verified and ready for deployment."
+    log_success "[DRY-RUN] Workload '$VM_NAME' (ID: $VM_IDENTIFIER) verified with dual-stack IPv4/IPv6 auto-assignment."
     exit 0
 fi
 
@@ -271,17 +297,20 @@ incus config set "$VM_NAME" limits.memory="$RAM_SIZE"
 log_step "Step 4: Setting root disk size ($DISK_SIZE)..."
 incus config device override "$VM_NAME" root size="$DISK_SIZE" || incus config device set "$VM_NAME" root size="$DISK_SIZE"
 
-log_step "Step 5: Applying cloud-init user-data..."
+log_step "Step 5: Applying Dual-Stack IPv4 & IPv6 network configuration..."
+incus config set "$VM_NAME" user.network-config - < "$TMP_NET_CONFIG"
+
+log_step "Step 6: Applying cloud-init user-data..."
 incus config set "$VM_NAME" user.user-data - < "$TMP_CLOUD_INIT"
 
-log_step "Step 6: Setting metadata (vm_identifier=$VM_IDENTIFIER, lifetime=$LIFETIME)..."
+log_step "Step 7: Setting metadata (vm_identifier=$VM_IDENTIFIER, lifetime=$LIFETIME)..."
 incus config set "$VM_NAME" user.vm_identifier="$VM_IDENTIFIER"
 incus config set "$VM_NAME" user.lifetime="$LIFETIME"
 
-log_step "Step 7: Starting VM '$VM_NAME'..."
+log_step "Step 8: Starting VM '$VM_NAME'..."
 incus start "$VM_NAME"
 
-log_success "Workload '$VM_NAME' (ID: $VM_IDENTIFIER) launched successfully!"
+log_success "Workload '$VM_NAME' (ID: $VM_IDENTIFIER) launched successfully with auto-assigned IPv4 & IPv6!"
 
-log_step "Current VM Status:"
+log_step "Current VM Status & Network Leases:"
 incus info "$VM_NAME" || true
