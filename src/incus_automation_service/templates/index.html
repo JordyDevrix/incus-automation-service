@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Incus Workload Provisioning Wizard</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eef2ff',
+                            100: '#e0e7ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #475569;
+        }
+        .step-transition {
+            transition: all 0.25s ease-in-out;
+        }
+    </style>
+</head>
+<body class="min-h-full flex flex-col font-sans antialiased bg-slate-950 text-slate-200">
+
+    <!-- Top Navigation Header -->
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-50">
+        <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                    <i class="fa-solid fa-server text-white text-lg"></i>
+                </div>
+                <div>
+                    <span class="text-base font-bold tracking-tight text-white flex items-center gap-2">
+                        Incus VM Provisioner
+                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-medium border border-indigo-500/30">Direct Bash Pipeline</span>
+                    </span>
+                    <p class="text-xs text-slate-400">Step-by-step workload provisioning with SQLite retention tracking</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-3">
+                <button onclick="toggleDbModal()" class="text-xs text-slate-300 hover:text-white transition flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">
+                    <i class="fa-solid fa-database text-indigo-400"></i> SQLite DB Records
+                </button>
+                <a href="/docs" target="_blank" class="text-xs text-slate-400 hover:text-white transition flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-slate-800">
+                    <i class="fa-solid fa-book text-slate-400"></i> API Docs
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Wizard Container -->
+    <main class="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        
+        <!-- Stepper Progress Bar -->
+        <div class="mb-8">
+            <div class="flex items-center justify-between max-w-2xl mx-auto relative">
+                <div class="absolute left-0 top-1/2 -translate-y-1/2 h-0.5 w-full bg-slate-800 -z-0"></div>
+                <div id="progressBar" class="absolute left-0 top-1/2 -translate-y-1/2 h-0.5 bg-indigo-500 transition-all duration-300 -z-0" style="width: 0%;"></div>
+
+                <!-- Step 1 Indicator -->
+                <div class="step-indicator relative z-10 flex flex-col items-center cursor-pointer" onclick="goToStep(1)">
+                    <div id="step-badge-1" class="w-9 h-9 rounded-full bg-indigo-600 text-white font-semibold text-xs flex items-center justify-center border-2 border-indigo-400 shadow-md shadow-indigo-600/30">
+                        1
+                    </div>
+                    <span id="step-label-1" class="text-[11px] font-medium text-white mt-1.5">Identity</span>
+                </div>
+
+                <!-- Step 2 Indicator -->
+                <div class="step-indicator relative z-10 flex flex-col items-center cursor-pointer" onclick="goToStep(2)">
+                    <div id="step-badge-2" class="w-9 h-9 rounded-full bg-slate-900 text-slate-400 font-semibold text-xs flex items-center justify-center border-2 border-slate-800">
+                        2
+                    </div>
+                    <span id="step-label-2" class="text-[11px] font-medium text-slate-500 mt-1.5">Resources</span>
+                </div>
+
+                <!-- Step 3 Indicator -->
+                <div class="step-indicator relative z-10 flex flex-col items-center cursor-pointer" onclick="goToStep(3)">
+                    <div id="step-badge-3" class="w-9 h-9 rounded-full bg-slate-900 text-slate-400 font-semibold text-xs flex items-center justify-center border-2 border-slate-800">
+                        3
+                    </div>
+                    <span id="step-label-3" class="text-[11px] font-medium text-slate-500 mt-1.5">Access</span>
+                </div>
+
+                <!-- Step 4 Indicator -->
+                <div class="step-indicator relative z-10 flex flex-col items-center cursor-pointer" onclick="goToStep(4)">
+                    <div id="step-badge-4" class="w-9 h-9 rounded-full bg-slate-900 text-slate-400 font-semibold text-xs flex items-center justify-center border-2 border-slate-800">
+                        4
+                    </div>
+                    <span id="step-label-4" class="text-[11px] font-medium text-slate-500 mt-1.5">Lifetime</span>
+                </div>
+
+                <!-- Step 5 Indicator -->
+                <div class="step-indicator relative z-10 flex flex-col items-center cursor-pointer" onclick="goToStep(5)">
+                    <div id="step-badge-5" class="w-9 h-9 rounded-full bg-slate-900 text-slate-400 font-semibold text-xs flex items-center justify-center border-2 border-slate-800">
+                        5
+                    </div>
+                    <span id="step-label-5" class="text-[11px] font-medium text-slate-500 mt-1.5">Provision</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Wizard Card -->
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-6 sm:p-8 relative overflow-hidden">
+            <div class="absolute -right-24 -top-24 w-60 h-60 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none"></div>
+
+            <form id="wizardForm" onsubmit="event.preventDefault();">
+
+                <!-- ============================================================ -->
+                <!-- PAGE 1: Identity & OS Image -->
+                <!-- ============================================================ -->
+                <div id="page-1" class="page-step">
+                    <div class="mb-6">
+                        <div class="flex items-center gap-2 text-indigo-400 text-xs font-semibold uppercase tracking-wider mb-1">
+                            <i class="fa-solid fa-id-badge"></i> Step 1 of 5
+                        </div>
+                        <h2 class="text-xl font-bold text-white">Workload Identity & Operating System</h2>
+                        <p class="text-xs text-slate-400 mt-1">Specify instance name and select the operating system image.</p>
+                    </div>
+
+                    <div class="space-y-5">
+                        <!-- VM Instance Name -->
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1.5">
+                                VM Instance Name <span class="text-rose-400">*</span>
+                            </label>
+                            <input type="text" id="vm_name" name="vm_name" value="web-server-01" required
+                                placeholder="e.g. web-server-01"
+                                class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                            <div id="vm_name_error" class="text-[11px] text-rose-400 mt-1 hidden">
+                                Please enter a valid name (alphanumeric, dashes, underscores, no spaces).
+                            </div>
+                        </div>
+
+                        <!-- VM Identifier (Immutable ID) -->
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
+                                <span class="flex items-center gap-1.5">
+                                    <i class="fa-solid fa-fingerprint text-indigo-400"></i> Unique VM Identifier (Database Key)
+                                </span>
+                                <span class="text-[10px] text-slate-500">Auto-generated or custom</span>
+                            </label>
+                            <div class="flex gap-2">
+                                <input type="text" id="vm_identifier" name="vm_identifier"
+                                    placeholder="Leave blank to auto-generate unique ID"
+                                    class="flex-1 px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono text-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                                <button type="button" onclick="generateNewIdentifier()"
+                                    class="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 rounded-xl border border-slate-700 transition flex items-center gap-1.5">
+                                    <i class="fa-solid fa-arrows-rotate text-xs"></i> New ID
+                                </button>
+                            </div>
+                            <p class="text-[10px] text-slate-500 mt-1">This unique key will be stored in SQLite and passed to Incus metadata for future deletion.</p>
+                        </div>
+
+                        <!-- OS Image Selector -->
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1.5">
+                                Operating System Image <span class="text-rose-400">*</span>
+                            </label>
+                            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-3">
+                                <label class="os-card p-3 rounded-xl border border-indigo-500/50 bg-indigo-950/20 cursor-pointer flex flex-col justify-between hover:border-indigo-400 transition" onclick="selectOs('ubuntu-24.04', this)">
+                                    <div class="flex items-center gap-2">
+                                        <i class="fa-brands fa-ubuntu text-orange-500 text-base"></i>
+                                        <span class="text-xs font-semibold text-white">Ubuntu 24.04</span>
+                                    </div>
+                                    <span class="text-[10px] text-slate-400 mt-1">Noble Numbat LTS</span>
+                                </label>
+                                <label class="os-card p-3 rounded-xl border border-slate-800 bg-slate-950 cursor-pointer flex flex-col justify-between hover:border-slate-700 transition" onclick="selectOs('ubuntu-22.04', this)">
+                                    <div class="flex items-center gap-2">
+                                        <i class="fa-brands fa-ubuntu text-orange-400 text-base"></i>
+                                        <span class="text-xs font-semibold text-white">Ubuntu 22.04</span>
+                                    </div>
+                                    <span class="text-[10px] text-slate-400 mt-1">Jammy Jellyfish LTS</span>
+                                </label>
+                                <label class="os-card p-3 rounded-xl border border-slate-800 bg-slate-950 cursor-pointer flex flex-col justify-between hover:border-slate-700 transition" onclick="selectOs('debian-12', this)">
+                                    <div class="flex items-center gap-2">
+                                        <i class="fa-brands fa-debian text-rose-500 text-base"></i>
+                                        <span class="text-xs font-semibold text-white">Debian 12</span>
+                                    </div>
+                                    <span class="text-[10px] text-slate-400 mt-1">Bookworm Stable</span>
+                                </label>
+                                <label class="os-card p-3 rounded-xl border border-slate-800 bg-slate-950 cursor-pointer flex flex-col justify-between hover:border-slate-700 transition" onclick="selectOs('alpine-3.20', this)">
+                                    <div class="flex items-center gap-2">
+                                        <i class="fa-solid fa-mountain text-sky-400 text-base"></i>
+                                        <span class="text-xs font-semibold text-white">Alpine 3.20</span>
+                                    </div>
+                                    <span class="text-[10px] text-slate-400 mt-1">Lightweight Cloud</span>
+                                </label>
+                                <label class="os-card p-3 rounded-xl border border-slate-800 bg-slate-950 cursor-pointer flex flex-col justify-between hover:border-slate-700 transition" onclick="selectOs('archlinux', this)">
+                                    <div class="flex items-center gap-2">
+                                        <i class="fa-solid fa-cube text-cyan-400 text-base"></i>
+                                        <span class="text-xs font-semibold text-white">Arch Linux</span>
+                                    </div>
+                                    <span class="text-[10px] text-slate-400 mt-1">Rolling Cloud Image</span>
+                                </label>
+                                <label class="os-card p-3 rounded-xl border border-slate-800 bg-slate-950 cursor-pointer flex flex-col justify-between hover:border-slate-700 transition" onclick="selectOs('custom', this)">
+                                    <div class="flex items-center gap-2">
+                                        <i class="fa-solid fa-wrench text-amber-400 text-base"></i>
+                                        <span class="text-xs font-semibold text-white">Custom...</span>
+                                    </div>
+                                    <span class="text-[10px] text-slate-400 mt-1">Manual image URI</span>
+                                </label>
+                            </div>
+
+                            <input type="text" id="os_image" name="os_image" value="ubuntu-24.04" required
+                                placeholder="e.g. images:ubuntu/24.04/cloud"
+                                class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                            <div id="os_image_error" class="text-[11px] text-rose-400 mt-1 hidden">
+                                Please specify an OS image.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- PAGE 2: Hardware Resources -->
+                <!-- ============================================================ -->
+                <div id="page-2" class="page-step hidden">
+                    <div class="mb-6">
+                        <div class="flex items-center gap-2 text-indigo-400 text-xs font-semibold uppercase tracking-wider mb-1">
+                            <i class="fa-solid fa-microchip"></i> Step 2 of 5
+                        </div>
+                        <h2 class="text-xl font-bold text-white">Hardware Resource Allocation</h2>
+                        <p class="text-xs text-slate-400 mt-1">Choose a preset size or customize CPU cores, RAM, and Disk storage.</p>
+                    </div>
+
+                    <!-- Presets -->
+                    <div class="mb-6">
+                        <label class="block text-xs font-medium text-slate-300 mb-2">Quick Sizing Presets</label>
+                        <div class="grid grid-cols-3 gap-3">
+                            <button type="button" onclick="applyPreset('small', this)" class="preset-btn p-3 rounded-xl border border-slate-800 bg-slate-950 hover:border-indigo-500/40 text-left transition">
+                                <div class="text-xs font-semibold text-white">Small</div>
+                                <div class="text-[11px] text-slate-400 mt-0.5">1 vCPU &bull; 2GiB RAM &bull; 20GiB Disk</div>
+                            </button>
+                            <button type="button" onclick="applyPreset('medium', this)" class="preset-btn p-3 rounded-xl border border-indigo-500/60 bg-indigo-950/30 hover:border-indigo-400 text-left transition">
+                                <div class="text-xs font-semibold text-white">Medium (Default)</div>
+                                <div class="text-[11px] text-slate-400 mt-0.5">2 vCPU &bull; 4GiB RAM &bull; 40GiB Disk</div>
+                            </button>
+                            <button type="button" onclick="applyPreset('large', this)" class="preset-btn p-3 rounded-xl border border-slate-800 bg-slate-950 hover:border-indigo-500/40 text-left transition">
+                                <div class="text-xs font-semibold text-white">Large</div>
+                                <div class="text-[11px] text-slate-400 mt-0.5">4 vCPU &bull; 8GiB RAM &bull; 80GiB Disk</div>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Fine-grained Inputs -->
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
+                                <span>CPU Cores <span class="text-rose-400">*</span></span>
+                                <i class="fa-solid fa-microchip text-slate-500"></i>
+                            </label>
+                            <input type="number" id="cpu_count" name="cpu_count" value="2" min="1" max="128" required
+                                class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                            <div id="cpu_count_error" class="text-[11px] text-rose-400 mt-1 hidden">
+                                Minimum 1 CPU core is required.
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
+                                <span>RAM Size <span class="text-rose-400">*</span></span>
+                                <i class="fa-solid fa-memory text-slate-500"></i>
+                            </label>
+                            <input type="text" id="ram_size" name="ram_size" value="4GiB" required
+                                placeholder="e.g. 4GiB, 8GiB"
+                                class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                            <div id="ram_size_error" class="text-[11px] text-rose-400 mt-1 hidden">
+                                Please specify RAM size (e.g. 4GiB).
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1.5 flex items-center justify-between">
+                                <span>Disk Storage <span class="text-rose-400">*</span></span>
+                                <i class="fa-solid fa-hard-drive text-slate-500"></i>
+                            </label>
+                            <input type="text" id="disk_size" name="disk_size" value="40GiB" required
+                                placeholder="e.g. 40GiB, 100GiB"
+                                class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                            <div id="disk_size_error" class="text-[11px] text-rose-400 mt-1 hidden">
+                                Please specify disk size (e.g. 40GiB).
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- PAGE 3: Access & Authentication -->
+                <!-- ============================================================ -->
+                <div id="page-3" class="page-step hidden">
+                    <div class="mb-6">
+                        <div class="flex items-center gap-2 text-indigo-400 text-xs font-semibold uppercase tracking-wider mb-1">
+                            <i class="fa-solid fa-key"></i> Step 3 of 5
+                        </div>
+                        <h2 class="text-xl font-bold text-white">Access & User Credentials</h2>
+                        <p class="text-xs text-slate-400 mt-1">Configure the admin cloud-init user and SSH authorization keys.</p>
+                    </div>
+
+                    <div class="space-y-5">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1.5">
+                                Admin Username <span class="text-rose-400">*</span>
+                            </label>
+                            <input type="text" id="admin_user" name="admin_user" value="admin" required
+                                class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                            <div id="admin_user_error" class="text-[11px] text-rose-400 mt-1 hidden">
+                                Admin username is required.
+                            </div>
+                        </div>
+
+                        <div>
+                            <div class="flex items-center justify-between mb-1.5">
+                                <label class="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                                    <i class="fa-solid fa-shield-halved text-indigo-400"></i> Admin SSH Public Key (Authorized Key)
+                                </label>
+                                <button type="button" onclick="insertMockSSHKey()" class="text-xs text-indigo-400 hover:text-indigo-300 underline">
+                                    Insert Sample Key
+                                </button>
+                            </div>
+                            <textarea id="admin_ssh_key" name="admin_ssh_key" rows="4"
+                                placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... or ssh-rsa AAAAB3NzaC1yc2E..."
+                                class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition custom-scrollbar"></textarea>
+                            <p class="text-[10px] text-slate-500 mt-1">This key will be provisioned directly via cloud-init <code>ssh_authorized_keys</code> for the admin user.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- PAGE 4: Lifetime & Retention Policy -->
+                <!-- ============================================================ -->
+                <div id="page-4" class="page-step hidden">
+                    <div class="mb-6">
+                        <div class="flex items-center gap-2 text-indigo-400 text-xs font-semibold uppercase tracking-wider mb-1">
+                            <i class="fa-solid fa-clock"></i> Step 4 of 5
+                        </div>
+                        <h2 class="text-xl font-bold text-white">Lifetime & Retention Policy</h2>
+                        <p class="text-xs text-slate-400 mt-1">Configure expiration date to allow automated periodic deletion from SQLite.</p>
+                    </div>
+
+                    <div class="space-y-6">
+                        <!-- Lifetime Selector -->
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-2">Select Duration</label>
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+                                <button type="button" onclick="selectLifetime('24h', this)" class="lifetime-btn p-3 rounded-xl border border-slate-800 bg-slate-950 text-left hover:border-indigo-500/40 transition">
+                                    <div class="text-xs font-semibold text-white">24 Hours</div>
+                                    <div class="text-[10px] text-slate-400">1 day temporary</div>
+                                </button>
+                                <button type="button" onclick="selectLifetime('7d', this)" class="lifetime-btn p-3 rounded-xl border border-indigo-500/60 bg-indigo-950/30 text-left hover:border-indigo-400 transition">
+                                    <div class="text-xs font-semibold text-white">7 Days</div>
+                                    <div class="text-[10px] text-slate-400">1 week standard</div>
+                                </button>
+                                <button type="button" onclick="selectLifetime('30d', this)" class="lifetime-btn p-3 rounded-xl border border-slate-800 bg-slate-950 text-left hover:border-indigo-500/40 transition">
+                                    <div class="text-xs font-semibold text-white">30 Days</div>
+                                    <div class="text-[10px] text-slate-400">1 month staging</div>
+                                </button>
+                                <button type="button" onclick="selectLifetime('persistent', this)" class="lifetime-btn p-3 rounded-xl border border-slate-800 bg-slate-950 text-left hover:border-indigo-500/40 transition">
+                                    <div class="text-xs font-semibold text-white">Persistent</div>
+                                    <div class="text-[10px] text-slate-400">No auto-cleanup</div>
+                                </button>
+                            </div>
+
+                            <input type="text" id="lifetime" name="lifetime" value="7d" oninput="updateValidThruCalculation()"
+                                placeholder="e.g. 7d, 24h, 30d, persistent"
+                                class="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition">
+                        </div>
+
+                        <!-- Computed Expiration Banner -->
+                        <div class="p-4 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+                            <div>
+                                <div class="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                                    <i class="fa-solid fa-calendar-check text-indigo-400"></i> Calculated Expiration (`valid_thru`):
+                                </div>
+                                <div id="computedValidThru" class="text-sm font-semibold text-emerald-400 mt-0.5">Calculating...</div>
+                            </div>
+                            <div class="text-right">
+                                <span class="text-[10px] text-slate-500">Stored in SQLite column</span>
+                                <div class="text-xs text-slate-400 font-mono">vms.valid_thru</div>
+                            </div>
+                        </div>
+
+                        <!-- Dry Run Toggle -->
+                        <div class="p-4 rounded-xl bg-slate-950 border border-slate-800">
+                            <label class="flex items-center gap-3 cursor-pointer">
+                                <input type="checkbox" id="dry_run" name="dry_run" class="w-4 h-4 rounded text-indigo-600 bg-slate-900 border-slate-700 focus:ring-indigo-500">
+                                <div>
+                                    <div class="text-xs font-semibold text-white flex items-center gap-1.5">
+                                        <i class="fa-solid fa-flask text-amber-400"></i> Dry-Run / Simulation Mode
+                                    </div>
+                                    <div class="text-[11px] text-slate-400">Simulate bash execution and verify script flags without launching real VM</div>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- PAGE 5: Review & Provision -->
+                <!-- ============================================================ -->
+                <div id="page-5" class="page-step hidden">
+                    <div class="mb-6">
+                        <div class="flex items-center gap-2 text-indigo-400 text-xs font-semibold uppercase tracking-wider mb-1">
+                            <i class="fa-solid fa-clipboard-check"></i> Step 5 of 5
+                        </div>
+                        <h2 class="text-xl font-bold text-white">Review & Confirm Provisioning</h2>
+                        <p class="text-xs text-slate-400 mt-1">Review the parameters that will be passed to <code>scripts/provision_vm.sh</code> and recorded to SQLite.</p>
+                    </div>
+
+                    <!-- Summary Grid -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                        
+                        <!-- Col 1: Workload Info -->
+                        <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2.5 text-xs">
+                            <div class="font-semibold text-white border-b border-slate-800 pb-1.5 flex items-center gap-1.5">
+                                <i class="fa-solid fa-server text-indigo-400"></i> Workload & Database Specs
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">Instance Name:</span>
+                                <span id="rev_name" class="font-medium text-white">-</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">VM Identifier:</span>
+                                <span id="rev_id" class="font-mono text-indigo-300">-</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">OS Image:</span>
+                                <span id="rev_image" class="font-medium text-white">-</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">Admin User:</span>
+                                <span id="rev_user" class="font-medium text-white">admin</span>
+                            </div>
+                        </div>
+
+                        <!-- Col 2: Resources & Retention -->
+                        <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2.5 text-xs">
+                            <div class="font-semibold text-white border-b border-slate-800 pb-1.5 flex items-center gap-1.5">
+                                <i class="fa-solid fa-sliders text-indigo-400"></i> Hardware & Retention
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">vCPU Cores:</span>
+                                <span id="rev_cpu" class="font-medium text-white">-</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">RAM Size:</span>
+                                <span id="rev_ram" class="font-medium text-white">-</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">Disk Storage:</span>
+                                <span id="rev_disk" class="font-medium text-white">-</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">Valid Thru:</span>
+                                <span id="rev_valid_thru" class="font-semibold text-emerald-400">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Direct Bash Command Preview -->
+                    <div class="mb-6">
+                        <label class="block text-xs font-medium text-slate-400 mb-1.5 flex items-center justify-between">
+                            <span>Direct Bash Command Execution:</span>
+                            <span class="text-[10px] text-slate-500">Single Source of Truth</span>
+                        </label>
+                        <div id="commandPreviewBox" class="p-3 bg-slate-950 border border-slate-800 rounded-xl font-mono text-xs text-indigo-300 overflow-x-auto whitespace-pre">
+                            scripts/provision_vm.sh ...
+                        </div>
+                    </div>
+
+                    <!-- Execution Console Box (Shown after clicking provision) -->
+                    <div id="executionConsoleContainer" class="hidden mb-6">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                                <i class="fa-solid fa-terminal text-indigo-400"></i> Execution Output:
+                            </span>
+                            <span id="execBadge" class="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">Running...</span>
+                        </div>
+                        <pre id="executionTerminal" class="p-4 bg-slate-950 border border-slate-800 rounded-xl font-mono text-xs text-emerald-400 overflow-y-auto max-h-64 whitespace-pre-wrap custom-scrollbar select-text shadow-inner">Executing...</pre>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- Wizard Navigation Footer Controls -->
+                <!-- ============================================================ -->
+                <div class="mt-8 pt-4 border-t border-slate-800 flex items-center justify-between">
+                    <button type="button" id="btnPrev" onclick="navigateStep(-1)"
+                        class="px-4 py-2 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-semibold flex items-center gap-2 transition disabled:opacity-40 disabled:cursor-not-allowed">
+                        <i class="fa-solid fa-arrow-left"></i> Previous
+                    </button>
+
+                    <div class="flex items-center gap-3">
+                        <button type="button" id="btnNext" onclick="navigateStep(1)"
+                            class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 flex items-center gap-2 transition active:scale-[0.98]">
+                            Next Step <i class="fa-solid fa-arrow-right"></i>
+                        </button>
+
+                        <button type="button" id="btnProvision" onclick="executeProvisioning()"
+                            class="hidden px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-lg shadow-emerald-600/30 flex items-center gap-2 transition active:scale-[0.98]">
+                            <i class="fa-solid fa-play"></i> Provision Workload
+                        </button>
+                    </div>
+                </div>
+
+            </form>
+        </div>
+    </main>
+
+    <!-- SQLite Database Viewer Modal -->
+    <div id="dbModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-database text-indigo-400"></i>
+                    <h3 class="text-sm font-bold text-white">SQLite Database: <code>data/vms.db</code></h3>
+                </div>
+                <button onclick="toggleDbModal()" class="text-slate-400 hover:text-white text-sm"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="p-6 overflow-y-auto flex-1 custom-scrollbar">
+                <div class="text-xs text-slate-400 mb-3">
+                    Table <code>vms</code> contains all registered instances mapped to their <code>valid_thru</code> expiration date:
+                </div>
+                <div class="border border-slate-800 rounded-xl overflow-hidden">
+                    <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-950 text-slate-400 border-b border-slate-800">
+                            <tr>
+                                <th class="p-3">VM Identifier</th>
+                                <th class="p-3">Valid Thru</th>
+                                <th class="p-3">Instance Name</th>
+                                <th class="p-3">Status</th>
+                                <th class="p-3 text-right">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dbTableBody" class="divide-y divide-slate-800 text-slate-300">
+                            <tr><td colspan="5" class="p-4 text-center text-slate-500">Loading records...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="px-6 py-3 bg-slate-950 border-t border-slate-800 flex justify-between items-center text-xs text-slate-500">
+                <span>Periodic delete script: <code>scripts/cleanup_expired_vms.sh</code></span>
+                <button onclick="fetchDbRecords()" class="text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
+                    <i class="fa-solid fa-arrows-rotate"></i> Refresh
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script Controller -->
+    <script>
+        let currentStep = 1;
+        const totalSteps = 5;
+
+        const presets = {
+            small: { cpu: "1", ram: "2GiB", disk: "20GiB" },
+            medium: { cpu: "2", ram: "4GiB", disk: "40GiB" },
+            large: { cpu: "4", ram: "8GiB", disk: "80GiB" }
+        };
+
+        function generateNewIdentifier() {
+            const name = document.getElementById('vm_name').value.trim() || 'vm';
+            const cleanName = name.replace(/[^a-zA-Z0-9_-]/g, '');
+            const rand = Math.random().toString(36).substring(2, 8);
+            document.getElementById('vm_identifier').value = `${cleanName}-${rand}`;
+            updateReview();
+        }
+
+        function selectOs(imageName, el) {
+            document.querySelectorAll('.os-card').forEach(c => {
+                c.classList.remove('border-indigo-500/50', 'bg-indigo-950/20');
+                c.classList.add('border-slate-800', 'bg-slate-950');
+            });
+            if (el) {
+                el.classList.add('border-indigo-500/50', 'bg-indigo-950/20');
+                el.classList.remove('border-slate-800', 'bg-slate-950');
+            }
+            const input = document.getElementById('os_image');
+            if (imageName === 'custom') {
+                input.value = '';
+                input.focus();
+            } else {
+                input.value = imageName;
+            }
+            updateReview();
+        }
+
+        function applyPreset(presetName, el) {
+            document.querySelectorAll('.preset-btn').forEach(b => {
+                b.classList.remove('border-indigo-500/60', 'bg-indigo-950/30');
+                b.classList.add('border-slate-800', 'bg-slate-950');
+            });
+            if (el) {
+                el.classList.add('border-indigo-500/60', 'bg-indigo-950/30');
+                el.classList.remove('border-slate-800', 'bg-slate-950');
+            }
+            const p = presets[presetName];
+            if (p) {
+                document.getElementById('cpu_count').value = p.cpu;
+                document.getElementById('ram_size').value = p.ram;
+                document.getElementById('disk_size').value = p.disk;
+            }
+            updateReview();
+        }
+
+        function selectLifetime(val, el) {
+            document.querySelectorAll('.lifetime-btn').forEach(b => {
+                b.classList.remove('border-indigo-500/60', 'bg-indigo-950/30');
+                b.classList.add('border-slate-800', 'bg-slate-950');
+            });
+            if (el) {
+                el.classList.add('border-indigo-500/60', 'bg-indigo-950/30');
+                el.classList.remove('border-slate-800', 'bg-slate-950');
+            }
+            document.getElementById('lifetime').value = val;
+            updateValidThruCalculation();
+        }
+
+        function insertMockSSHKey() {
+            document.getElementById('admin_ssh_key').value = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleAdminKeyForAutomationIncusService2026 admin@incus-host";
+        }
+
+        function updateValidThruCalculation() {
+            const lifetime = document.getElementById('lifetime').value.trim();
+            const validThruEl = document.getElementById('computedValidThru');
+            
+            if (!lifetime || lifetime.toLowerCase() === 'persistent' || lifetime.toLowerCase() === 'forever') {
+                validThruEl.textContent = "Persistent (Never expires)";
+                validThruEl.className = "text-sm font-semibold text-indigo-400 mt-0.5";
+                return;
+            }
+
+            const now = new Date();
+            let target = new Date();
+            const match = lifetime.match(/^(\d+)\s*([a-zA-Z]+)$/);
+            if (match) {
+                const amount = parseInt(match[1]);
+                const unit = match[2].toLowerCase();
+                if (unit.startsWith('h')) target.setHours(now.getHours() + amount);
+                else if (unit.startsWith('d')) target.setDate(now.getDate() + amount);
+                else if (unit.startsWith('w')) target.setDate(now.getDate() + (amount * 7));
+                else if (unit.startsWith('m')) target.setMinutes(now.getMinutes() + amount);
+                else target.setDate(now.getDate() + amount);
+            } else {
+                target.setDate(now.getDate() + 7);
+            }
+
+            const formatted = target.toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
+            validThruEl.textContent = formatted;
+            validThruEl.className = "text-sm font-semibold text-emerald-400 mt-0.5";
+            updateReview();
+        }
+
+        function validateStep(step) {
+            let valid = true;
+            if (step === 1) {
+                const name = document.getElementById('vm_name').value.trim();
+                const nameErr = document.getElementById('vm_name_error');
+                if (!name || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) {
+                    nameErr.classList.remove('hidden');
+                    valid = false;
+                } else {
+                    nameErr.classList.add('hidden');
+                }
+
+                const os = document.getElementById('os_image').value.trim();
+                const osErr = document.getElementById('os_image_error');
+                if (!os) {
+                    osErr.classList.remove('hidden');
+                    valid = false;
+                } else {
+                    osErr.classList.add('hidden');
+                }
+            } else if (step === 2) {
+                const cpu = parseInt(document.getElementById('cpu_count').value);
+                const cpuErr = document.getElementById('cpu_count_error');
+                if (isNaN(cpu) || cpu < 1) {
+                    cpuErr.classList.remove('hidden');
+                    valid = false;
+                } else {
+                    cpuErr.classList.add('hidden');
+                }
+
+                const ram = document.getElementById('ram_size').value.trim();
+                const ramErr = document.getElementById('ram_size_error');
+                if (!ram) {
+                    ramErr.classList.remove('hidden');
+                    valid = false;
+                } else {
+                    ramErr.classList.add('hidden');
+                }
+
+                const disk = document.getElementById('disk_size').value.trim();
+                const diskErr = document.getElementById('disk_size_error');
+                if (!disk) {
+                    diskErr.classList.remove('hidden');
+                    valid = false;
+                } else {
+                    diskErr.classList.add('hidden');
+                }
+            } else if (step === 3) {
+                const user = document.getElementById('admin_user').value.trim();
+                const userErr = document.getElementById('admin_user_error');
+                if (!user) {
+                    userErr.classList.remove('hidden');
+                    valid = false;
+                } else {
+                    userErr.classList.add('hidden');
+                }
+            }
+            return valid;
+        }
+
+        function goToStep(targetStep) {
+            if (targetStep > currentStep) {
+                // Validate all intermediate steps
+                for (let s = currentStep; s < targetStep; s++) {
+                    if (!validateStep(s)) return;
+                }
+            }
+            currentStep = targetStep;
+            renderStep();
+        }
+
+        function navigateStep(direction) {
+            if (direction > 0) {
+                if (!validateStep(currentStep)) return;
+                currentStep = Math.min(totalSteps, currentStep + 1);
+            } else {
+                currentStep = Math.max(1, currentStep - 1);
+            }
+            renderStep();
+        }
+
+        function renderStep() {
+            // Update page visibility
+            for (let i = 1; i <= totalSteps; i++) {
+                const page = document.getElementById(`page-${i}`);
+                if (i === currentStep) {
+                    page.classList.remove('hidden');
+                } else {
+                    page.classList.add('hidden');
+                }
+
+                // Update Stepper Badges
+                const badge = document.getElementById(`step-badge-${i}`);
+                const label = document.getElementById(`step-label-${i}`);
+                if (i < currentStep) {
+                    badge.className = "w-9 h-9 rounded-full bg-emerald-600 text-white font-semibold text-xs flex items-center justify-center border-2 border-emerald-400";
+                    badge.innerHTML = `<i class="fa-solid fa-check"></i>`;
+                    label.className = "text-[11px] font-medium text-emerald-400 mt-1.5";
+                } else if (i === currentStep) {
+                    badge.className = "w-9 h-9 rounded-full bg-indigo-600 text-white font-semibold text-xs flex items-center justify-center border-2 border-indigo-400 shadow-md shadow-indigo-600/30";
+                    badge.textContent = i;
+                    label.className = "text-[11px] font-medium text-white mt-1.5";
+                } else {
+                    badge.className = "w-9 h-9 rounded-full bg-slate-900 text-slate-400 font-semibold text-xs flex items-center justify-center border-2 border-slate-800";
+                    badge.textContent = i;
+                    label.className = "text-[11px] font-medium text-slate-500 mt-1.5";
+                }
+            }
+
+            // Progress bar width
+            const pct = ((currentStep - 1) / (totalSteps - 1)) * 100;
+            document.getElementById('progressBar').style.width = `${pct}%`;
+
+            // Button visibility
+            document.getElementById('btnPrev').disabled = (currentStep === 1);
+            if (currentStep === totalSteps) {
+                document.getElementById('btnNext').classList.add('hidden');
+                document.getElementById('btnProvision').classList.remove('hidden');
+                updateReview();
+            } else {
+                document.getElementById('btnNext').classList.remove('hidden');
+                document.getElementById('btnProvision').classList.add('hidden');
+            }
+        }
+
+        function getFormData() {
+            let identifier = document.getElementById('vm_identifier').value.trim();
+            const name = document.getElementById('vm_name').value.trim();
+            if (!identifier) {
+                identifier = name ? `${name}-${Math.random().toString(36).substring(2, 8)}` : `vm-${Math.random().toString(36).substring(2, 8)}`;
+            }
+
+            return {
+                vm_name: name,
+                vm_identifier: identifier,
+                os_image: document.getElementById('os_image').value.trim(),
+                cpu_count: document.getElementById('cpu_count').value.trim(),
+                ram_size: document.getElementById('ram_size').value.trim(),
+                disk_size: document.getElementById('disk_size').value.trim(),
+                admin_user: document.getElementById('admin_user').value.trim(),
+                admin_ssh_key: document.getElementById('admin_ssh_key').value.trim(),
+                lifetime: document.getElementById('lifetime').value.trim(),
+                dry_run: document.getElementById('dry_run').checked
+            };
+        }
+
+        function updateReview() {
+            const data = getFormData();
+            document.getElementById('rev_name').textContent = data.vm_name || '-';
+            document.getElementById('rev_id').textContent = data.vm_identifier || '-';
+            document.getElementById('rev_image').textContent = data.os_image || '-';
+            document.getElementById('rev_user').textContent = data.admin_user || 'admin';
+            document.getElementById('rev_cpu').textContent = `${data.cpu_count} cores`;
+            document.getElementById('rev_ram').textContent = data.ram_size || '-';
+            document.getElementById('rev_disk').textContent = data.disk_size || '-';
+            document.getElementById('rev_valid_thru').textContent = document.getElementById('computedValidThru').textContent;
+
+            let cmd = `bash scripts/provision_vm.sh \\\n  --name "${data.vm_name}" \\\n  --image "${data.os_image}" \\\n  --cpu "${data.cpu_count}" \\\n  --ram "${data.ram_size}" \\\n  --disk "${data.disk_size}" \\\n  --user "${data.admin_user}" \\\n  --lifetime "${data.lifetime}" \\\n  --vm-id "${data.vm_identifier}"`;
+            if (data.admin_ssh_key) {
+                cmd += ` \\\n  --ssh-key "${data.admin_ssh_key.substring(0, 30)}..."`;
+            }
+            if (data.dry_run) {
+                cmd += ` \\\n  --dry-run`;
+            }
+            document.getElementById('commandPreviewBox').textContent = cmd;
+        }
+
+        async function executeProvisioning() {
+            const payload = getFormData();
+            const btn = document.getElementById('btnProvision');
+            const consoleBox = document.getElementById('executionConsoleContainer');
+            const terminal = document.getElementById('executionTerminal');
+            const badge = document.getElementById('execBadge');
+
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i> Provisioning Workload...`;
+            consoleBox.classList.remove('hidden');
+            badge.className = "text-xs px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30";
+            badge.innerHTML = `<i class="fa-solid fa-circle-notch animate-spin"></i> Executing provision_vm.sh`;
+            terminal.textContent = `[INFO] Calling scripts/provision_vm.sh directly...\n[INFO] Target Workload ID: ${payload.vm_identifier}\n[INFO] Dry Run: ${payload.dry_run}\n----------------------------------------\n`;
+
+            try {
+                const res = await fetch('/api/v1/provision', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(result.detail || "Provisioning request failed");
+                }
+
+                let output = result.stdout || "";
+                if (result.stderr) {
+                    output += `\n[STDERR]:\n${result.stderr}`;
+                }
+                terminal.textContent = output || "(No output captured)";
+
+                if (result.success) {
+                    badge.className = "text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30";
+                    badge.innerHTML = `<i class="fa-solid fa-check"></i> Provisioned Successfully (Exit 0)`;
+                } else {
+                    badge.className = "text-xs px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30";
+                    badge.innerHTML = `<i class="fa-solid fa-xmark"></i> Failed (Exit ${result.exit_code})`;
+                }
+
+            } catch (err) {
+                badge.className = "text-xs px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30";
+                badge.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> Error`;
+                terminal.textContent += `\n[CLIENT ERROR]: ${err.message}`;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<i class="fa-solid fa-play"></i> Provision Workload`;
+            }
+        }
+
+        async function toggleDbModal() {
+            const modal = document.getElementById('dbModal');
+            if (modal.classList.contains('hidden')) {
+                modal.classList.remove('hidden');
+                await fetchDbRecords();
+            } else {
+                modal.classList.add('hidden');
+            }
+        }
+
+        async function fetchDbRecords() {
+            const tbody = document.getElementById('dbTableBody');
+            tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-slate-500"><i class="fa-solid fa-spinner animate-spin"></i> Loading...</td></tr>`;
+            try {
+                const res = await fetch('/api/v1/vms');
+                const data = await res.json();
+                if (!data.vms || data.vms.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-slate-500">No registered VMs in SQLite database.</td></tr>`;
+                    return;
+                }
+                tbody.innerHTML = data.vms.map(vm => `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="p-3 font-mono text-indigo-300">${vm.vm_identifier}</td>
+                        <td class="p-3 text-emerald-400 font-medium">${vm.valid_thru || 'Persistent'}</td>
+                        <td class="p-3 text-white">${vm.vm_name}</td>
+                        <td class="p-3"><span class="px-2 py-0.5 rounded-full text-[10px] ${vm.status === 'active' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-400'}">${vm.status}</span></td>
+                        <td class="p-3 text-right">
+                            <button onclick="deleteVmRecord('${vm.vm_identifier}')" class="text-rose-400 hover:text-rose-300 text-xs"><i class="fa-regular fa-trash-can"></i></button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-rose-400">Error loading database records.</td></tr>`;
+            }
+        }
+
+        async function deleteVmRecord(vmId) {
+            if (!confirm(`Delete record for VM identifier ${vmId}?`)) return;
+            await fetch(`/api/v1/vms/${encodeURIComponent(vmId)}`, { method: 'DELETE' });
+            await fetchDbRecords();
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            generateNewIdentifier();
+            updateValidThruCalculation();
+            renderStep();
+        });
+    </script>
+</body>
+</html>
