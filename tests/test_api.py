@@ -31,6 +31,9 @@ def test_preview_command():
     data = response.json()
     assert "preview-srv-01" in data["vm_identifier"]
     assert "scripts/provision_vm.sh" in data["command_preview"]
+    assert data["ipv4_address"] is not None
+    assert data["ipv6_address"] is not None
+    assert "--ipv4" in data["command_preview"]
     assert data["valid_thru"] is not None
 
 
@@ -50,12 +53,13 @@ def test_provision_vm_endpoint_dry_run():
     data = response.json()
     assert data["success"] is True
     assert data["vm_name"] == "api-direct-vm"
+    assert data["ipv4_address"] is not None
+    assert data["ipv6_address"] is not None
     assert data["exit_code"] == 0
     assert "api-direct-vm" in data["stdout"]
 
 
 def test_sqlite_vms_api():
-    # List
     response = client.get("/api/v1/vms")
     assert response.status_code == 200
     assert "vms" in response.json()

@@ -475,10 +475,12 @@
                                 <span id="rev_disk" class="font-medium text-white">-</span>
                             </div>
                             <div class="flex justify-between">
-                                <span class="text-slate-400">Networking:</span>
-                                <span class="text-emerald-400 font-medium flex items-center gap-1">
-                                    <i class="fa-solid fa-network-wired text-[10px]"></i> Auto IPv4 + IPv6
-                                </span>
+                                <span class="text-slate-400">Assigned IPv4:</span>
+                                <span id="rev_ipv4" class="font-mono text-emerald-400 font-semibold">-</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-slate-400">Assigned IPv6:</span>
+                                <span id="rev_ipv6" class="font-mono text-indigo-300 text-[11px]">-</span>
                             </div>
                             <div class="flex justify-between">
                                 <span class="text-slate-400">Valid Thru:</span>
@@ -538,31 +540,32 @@
 
     <!-- SQLite Database Viewer Modal -->
     <div id="dbModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
-        <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-4xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
             <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
                 <div class="flex items-center gap-2">
                     <i class="fa-solid fa-database text-indigo-400"></i>
-                    <h3 class="text-sm font-bold text-white">SQLite Database: <code>data/vms.db</code></h3>
+                    <h3 class="text-sm font-bold text-white">SQLite Database: <code>data/vms.db</code> (High-Capacity /20 Pool)</h3>
                 </div>
                 <button onclick="toggleDbModal()" class="text-slate-400 hover:text-white text-sm"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="p-6 overflow-y-auto flex-1 custom-scrollbar">
                 <div class="text-xs text-slate-400 mb-3">
-                    Table <code>vms</code> contains all registered instances mapped to their <code>valid_thru</code> expiration date:
+                    Table <code>vms</code> tracks unique identifiers, dedicated IPv4/IPv6 leases, and expiration dates:
                 </div>
                 <div class="border border-slate-800 rounded-xl overflow-hidden">
                     <table class="w-full text-left text-xs">
                         <thead class="bg-slate-950 text-slate-400 border-b border-slate-800">
                             <tr>
                                 <th class="p-3">VM Identifier</th>
+                                <th class="p-3">IPv4 Address</th>
+                                <th class="p-3">IPv6 Address</th>
                                 <th class="p-3">Valid Thru</th>
-                                <th class="p-3">Instance Name</th>
                                 <th class="p-3">Status</th>
                                 <th class="p-3 text-right">Action</th>
                             </tr>
                         </thead>
                         <tbody id="dbTableBody" class="divide-y divide-slate-800 text-slate-300">
-                            <tr><td colspan="5" class="p-4 text-center text-slate-500">Loading records...</td></tr>
+                            <tr><td colspan="6" class="p-4 text-center text-slate-500">Loading records...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -826,7 +829,7 @@
             };
         }
 
-        function updateReview() {
+        async function updateReview() {
             const data = getFormData();
             document.getElementById('rev_name').textContent = data.vm_name || '-';
             document.getElementById('rev_id').textContent = data.vm_identifier || '-';
@@ -837,13 +840,26 @@
             document.getElementById('rev_disk').textContent = data.disk_size || '-';
             document.getElementById('rev_valid_thru').textContent = document.getElementById('computedValidThru').textContent;
 
+            try {
+                const res = await fetch('/api/v1/preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                if (res.ok) {
+                    const previewData = await res.json();
+                    document.getElementById('rev_ipv4').textContent = `${previewData.ipv4_address}/20`;
+                    document.getElementById('rev_ipv6').textContent = `${previewData.ipv6_address}/64`;
+                    document.getElementById('commandPreviewBox').textContent = previewData.command_preview;
+                    return;
+                }
+            } catch (e) {
+                console.log("Preview fetch fallback", e);
+            }
+
             let cmd = `bash scripts/provision_vm.sh \\\n  --name "${data.vm_name}" \\\n  --image "${data.os_image}" \\\n  --cpu "${data.cpu_count}" \\\n  --ram "${data.ram_size}" \\\n  --disk "${data.disk_size}" \\\n  --user "${data.admin_user}" \\\n  --lifetime "${data.lifetime}" \\\n  --vm-id "${data.vm_identifier}"`;
-            if (data.admin_ssh_key) {
-                cmd += ` \\\n  --ssh-key "${data.admin_ssh_key.substring(0, 30)}..."`;
-            }
-            if (data.dry_run) {
-                cmd += ` \\\n  --dry-run`;
-            }
+            if (data.admin_ssh_key) cmd += ` \\\n  --ssh-key "${data.admin_ssh_key.substring(0, 30)}..."`;
+            if (data.dry_run) cmd += ` \\\n  --dry-run`;
             document.getElementById('commandPreviewBox').textContent = cmd;
         }
 
@@ -871,6 +887,13 @@
 
                 if (!res.ok) {
                     throw new Error(result.detail || "Provisioning request failed");
+                }
+
+                if (result.ipv4_address) {
+                    document.getElementById('rev_ipv4').textContent = `${result.ipv4_address}/20`;
+                }
+                if (result.ipv6_address) {
+                    document.getElementById('rev_ipv6').textContent = `${result.ipv6_address}/64`;
                 }
 
                 let output = result.stdout || "";
@@ -909,19 +932,20 @@
 
         async function fetchDbRecords() {
             const tbody = document.getElementById('dbTableBody');
-            tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-slate-500"><i class="fa-solid fa-spinner animate-spin"></i> Loading...</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-slate-500"><i class="fa-solid fa-spinner animate-spin"></i> Loading...</td></tr>`;
             try {
                 const res = await fetch('/api/v1/vms');
                 const data = await res.json();
                 if (!data.vms || data.vms.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-slate-500">No registered VMs in SQLite database.</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-slate-500">No registered VMs in SQLite database.</td></tr>`;
                     return;
                 }
                 tbody.innerHTML = data.vms.map(vm => `
                     <tr class="hover:bg-slate-800/40 transition">
                         <td class="p-3 font-mono text-indigo-300">${vm.vm_identifier}</td>
-                        <td class="p-3 text-emerald-400 font-medium">${vm.valid_thru || 'Persistent'}</td>
-                        <td class="p-3 text-white">${vm.vm_name}</td>
+                        <td class="p-3 font-mono text-emerald-400 font-semibold">${vm.ipv4_address || '-'}</td>
+                        <td class="p-3 font-mono text-slate-300 text-[11px]">${vm.ipv6_address || '-'}</td>
+                        <td class="p-3 text-slate-300 font-medium">${vm.valid_thru || 'Persistent'}</td>
                         <td class="p-3"><span class="px-2 py-0.5 rounded-full text-[10px] ${vm.status === 'active' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-400'}">${vm.status}</span></td>
                         <td class="p-3 text-right">
                             <button onclick="deleteVmRecord('${vm.vm_identifier}')" class="text-rose-400 hover:text-rose-300 text-xs"><i class="fa-regular fa-trash-can"></i></button>
@@ -929,7 +953,7 @@
                     </tr>
                 `).join('');
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-rose-400">Error loading database records.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-rose-400">Error loading database records.</td></tr>`;
             }
         }
 

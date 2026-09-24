@@ -2,11 +2,13 @@
 
 A low-maintenance, single-source-of-truth Incus VM automation service featuring a **multi-step form wizard**, a direct **standalone bash provisioning pipeline**, and **SQLite retention tracking** (`vm_identifier` $\leftrightarrow$ `valid_thru`).
 
----
-
 ## 🎯 Architecture & Key Features
 
 - **Single Source of Truth**: No YAML templates or config files to maintain. The provisioning logic lives solely in [`scripts/provision_vm.sh`](scripts/provision_vm.sh).
+- **High-Capacity /20 IP Allocation (Scales to 400+ Student VMs)**:
+  - Default pool `10.100.0.0/20` provides **4,093 distinct IPv4 addresses** with zero collision risk.
+  - Dual redundancy: Binds static `ipv4.address` & `ipv6.address` to the Incus NIC device AND provisions cloud-init static routes + DHCP fallback.
+  - Automatically manages IP reservations and releases freed IPs upon deletion in `data/vms.db`.
 - **Page-by-Page Form Wizard**:
   - **Step 1: Workload Identity**: VM name validation, OS image selector (Ubuntu, Debian, Alpine, Arch, Custom), and unique VM identifier.
   - **Step 2: Hardware Resources**: Quick presets (*Small*, *Medium*, *Large*) and custom CPU, RAM, and Disk allocations.

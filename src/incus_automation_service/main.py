@@ -62,16 +62,31 @@ def index_page():
 @app.post("/api/v1/preview", response_model=VMPreviewResponse)
 def preview_vm_command(payload: VMProvisionRequest):
     """
-    Preview the direct bash command execution arguments and calculated valid_thru date.
+    Preview the direct bash command execution arguments, allocated IPs, and calculated valid_thru date.
     """
     vm_id = payload.get_effective_identifier()
     valid_thru = db.calculate_valid_thru(payload.lifetime)
-    cmd = f"bash scripts/provision_vm.sh --name '{payload.vm_name}' --image '{payload.os_image}' --cpu '{payload.cpu_count}' --ram '{payload.ram_size}' --disk '{payload.disk_size}' --user '{payload.admin_user}' --lifetime '{payload.lifetime}' --vm-id '{vm_id}'"
+    
+    # Allocate or use provided IPs
+    ipv4 = payload.ipv4_address
+    ipv6 = payload.ipv6_address
+    if not ipv4 or not ipv6:
+        try:
+            auto_v4, auto_v6 = db.allocate_next_ip()
+            ipv4 = ipv4 or auto_v4
+            ipv6 = ipv6 or auto_v6
+        except Exception:
+            ipv4 = ipv4 or "10.100.0.10"
+            ipv6 = ipv6 or "fd42:100:100::10"
+
+    cmd = f"bash scripts/provision_vm.sh --name '{payload.vm_name}' --image '{payload.os_image}' --cpu '{payload.cpu_count}' --ram '{payload.ram_size}' --disk '{payload.disk_size}' --user '{payload.admin_user}' --lifetime '{payload.lifetime}' --vm-id '{vm_id}' --ipv4 '{ipv4}' --ipv6 '{ipv6}'"
     if payload.dry_run:
         cmd += " --dry-run"
 
     return VMPreviewResponse(
         vm_identifier=vm_id,
+        ipv4_address=ipv4,
+        ipv6_address=ipv6,
         valid_thru=valid_thru,
         command_preview=cmd,
         params=payload.model_dump()

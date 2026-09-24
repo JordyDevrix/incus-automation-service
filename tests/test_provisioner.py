@@ -26,5 +26,8 @@ async def test_provisioner_dry_run():
     assert result.exit_code == 0
     assert result.dry_run is True
     assert result.vm_identifier == "test-direct-vm-12345"
+    assert result.ipv4_address is not None
+    assert result.ipv6_address is not None
     assert "test-direct-vm" in result.stdout
     assert "limits.cpu" in result.stdout
+    assert "10.100." in result.stdout

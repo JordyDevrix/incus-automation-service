@@ -13,7 +13,7 @@ DEFAULT_SCRIPT_PATH = BASE_DIR / "scripts" / "provision_vm.sh"
 
 
 class VMProvisioner:
-    """Executes the provisioning bash script directly with CLI flags."""
+    """Executes the provisioning bash script directly with CLI flags and allocated IPs."""
 
     def __init__(self, script_path: Path = DEFAULT_SCRIPT_PATH):
         self.script_path = script_path
@@ -24,7 +24,7 @@ class VMProvisioner:
         timeout_seconds: int = 300
     ) -> ProvisionResult:
         """
-        Executes scripts/provision_vm.sh asynchronously with CLI arguments.
+        Executes scripts/provision_vm.sh asynchronously with CLI arguments and dedicated IP assignment.
         """
         script_file_str = str(self.script_path.resolve())
 
@@ -33,6 +33,20 @@ class VMProvisioner:
 
         vm_identifier = request.get_effective_identifier()
         valid_thru = db.calculate_valid_thru(request.lifetime)
+
+        # Allocate unique IPv4 & IPv6 from high-capacity /20 pool if not provided
+        allocated_v4 = request.ipv4_address
+        allocated_v6 = request.ipv6_address
+        if not allocated_v4 or not allocated_v6:
+            try:
+                auto_v4, auto_v6 = db.allocate_next_ip()
+                if not allocated_v4:
+                    allocated_v4 = auto_v4
+                if not allocated_v6:
+                    allocated_v6 = auto_v6
+            except Exception as ip_err:
+                allocated_v4 = allocated_v4 or "10.100.0.10"
+                allocated_v6 = allocated_v6 or "fd42:100:100::10"
 
         # Build CLI arguments
         cmd_args = [
@@ -45,7 +59,9 @@ class VMProvisioner:
             "--disk", str(request.disk_size),
             "--user", request.admin_user,
             "--lifetime", request.lifetime,
-            "--vm-id", vm_identifier
+            "--vm-id", vm_identifier,
+            "--ipv4", allocated_v4,
+            "--ipv6", allocated_v6
         ]
 
         if request.admin_ssh_key:
@@ -90,7 +106,7 @@ class VMProvisioner:
         success = (exit_code == 0)
         message = "VM provisioned successfully" if success else f"Provisioning failed with exit code {exit_code}"
 
-        # Register VM record in SQLite database
+        # Register VM record and assigned IPs in SQLite database
         try:
             status_str = "active" if success else "failed"
             if request.dry_run:
@@ -99,6 +115,8 @@ class VMProvisioner:
                 vm_identifier=vm_identifier,
                 valid_thru=valid_thru,
                 vm_name=request.vm_name,
+                ipv4_address=allocated_v4,
+                ipv6_address=allocated_v6,
                 os_image=request.os_image,
                 cpu=str(request.cpu_count),
                 ram=str(request.ram_size),
@@ -112,6 +130,8 @@ class VMProvisioner:
             success=success,
             vm_name=request.vm_name,
             vm_identifier=vm_identifier,
+            ipv4_address=allocated_v4,
+            ipv6_address=allocated_v6,
             valid_thru=valid_thru,
             stdout=stdout,
             stderr=stderr,

@@ -46,6 +46,14 @@ class VMProvisionRequest(BaseModel):
         default=None,
         description="Unique immutable VM identifier (auto-generated if omitted)"
     )
+    ipv4_address: Optional[str] = Field(
+        default=None,
+        description="Dedicated IPv4 address (auto-allocated from /20 pool if omitted)"
+    )
+    ipv6_address: Optional[str] = Field(
+        default=None,
+        description="Dedicated IPv6 address (auto-allocated if omitted)"
+    )
     dry_run: bool = Field(
         default=False,
         description="If True, simulates provisioning without calling Incus"
@@ -55,14 +63,15 @@ class VMProvisionRequest(BaseModel):
         """Return provided identifier or generate a clean unique identifier."""
         if self.vm_identifier and self.vm_identifier.strip():
             return self.vm_identifier.strip()
-        # Generate clean short identifier prefixed by instance name
         short_id = uuid.uuid4().hex[:8]
         return f"{self.vm_name}-{short_id}"
 
 
 class VMPreviewResponse(BaseModel):
-    """Preview of calculated parameters and CLI command before provisioning."""
+    """Preview of calculated parameters, allocated IPs, and CLI command before provisioning."""
     vm_identifier: str
+    ipv4_address: str
+    ipv6_address: str
     valid_thru: Optional[str]
     command_preview: str
     params: Dict[str, Any]
@@ -73,6 +82,8 @@ class ProvisionResult(BaseModel):
     success: bool
     vm_name: str
     vm_identifier: str
+    ipv4_address: Optional[str] = None
+    ipv6_address: Optional[str] = None
     valid_thru: Optional[str]
     stdout: str
     stderr: str
