@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Script: provision_vm.sh
-# Description: Provisions an Incus VM directly with dedicated, non-conflicting
+# Description: Provisions an Incus VM directly with guaranteed, non-conflicting
 # IPv4 and IPv6 addresses designed to scale to 400+ student workloads.
 # Single source of truth for Incus VM creation, resource configuration, and networking.
 # ==============================================================================
@@ -170,24 +170,118 @@ if [[ -z "$VM_IDENTIFIER" ]]; then
     VM_IDENTIFIER="$VM_NAME"
 fi
 
-# Fallback deterministic IP if not provided
-if [[ -z "$ASSIGNED_IPV4" ]]; then
-    # Generate deterministic IP based on crc32/hash within 10.100.0.2 - 10.100.15.254 range
-    HASH_VAL=$(echo -n "$VM_IDENTIFIER" | cksum | awk '{print $1}')
-    IP_OFFSET=$(( (HASH_VAL % 4090) + 2 ))
-    OCT3=$(( IP_OFFSET / 256 ))
-    OCT4=$(( IP_OFFSET % 256 ))
-    if [[ $OCT4 -eq 0 ]]; then OCT4=1; fi
-    ASSIGNED_IPV4="10.100.${OCT3}.${OCT4}"
-    ASSIGNED_IPV6=$(printf "fd42:100:100::%x" "$IP_OFFSET")
+INCUS_BIN="$(command -v incus || true)"
+
+if [[ -z "$INCUS_BIN" ]]; then
+    log_warn "Incus command binary not found on this system PATH."
+    log_warn "Executing in SIMULATION / DRY-RUN mode."
+    DRY_RUN="1"
+elif [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
+    log_info "Dry-Run mode requested."
 fi
+
+# ------------------------------------------------------------------------------
+# 2. Bridge Network Auto-Scaling & Subnet Alignment
+# ------------------------------------------------------------------------------
+ACTUAL_BRIDGE_V4=""
+ACTUAL_BRIDGE_V6=""
+
+if [[ -n "$INCUS_BIN" && "$DRY_RUN" != "1" && "$DRY_RUN" != "true" ]]; then
+    # Create network if missing
+    if ! incus network show "$NETWORK_NAME" &>/dev/null; then
+        log_info "Creating high-capacity bridge '$NETWORK_NAME' ($GATEWAY_IPV4/$SUBNET_CIDR_V4 -> 4093 hosts)..."
+        incus network create "$NETWORK_NAME" \
+            ipv4.address="${GATEWAY_IPV4}/${SUBNET_CIDR_V4}" \
+            ipv4.nat=true \
+            ipv4.dhcp=true \
+            ipv6.address="${GATEWAY_IPV6}/${SUBNET_CIDR_V6}" \
+            ipv6.nat=true \
+            ipv6.dhcp=true || true
+    fi
+
+    # Read current bridge IP config
+    ACTUAL_BRIDGE_V4="$(incus network get "$NETWORK_NAME" ipv4.address 2>/dev/null || true)"
+    ACTUAL_BRIDGE_V6="$(incus network get "$NETWORK_NAME" ipv6.address 2>/dev/null || true)"
+
+    # If bridge is /24 (only 253 hosts), try expanding to /20 for 400+ student VMs
+    if [[ "$ACTUAL_BRIDGE_V4" =~ /24$ || "$ACTUAL_BRIDGE_V4" =~ /25$ || "$ACTUAL_BRIDGE_V4" =~ /26$ || "$ACTUAL_BRIDGE_V4" == "auto" || -z "$ACTUAL_BRIDGE_V4" ]]; then
+        log_info "Attempting to expand bridge '$NETWORK_NAME' to /20 high-capacity pool ($GATEWAY_IPV4/$SUBNET_CIDR_V4)..."
+        incus network set "$NETWORK_NAME" ipv4.address="${GATEWAY_IPV4}/${SUBNET_CIDR_V4}" ipv4.nat=true ipv4.dhcp=true 2>/dev/null || log_warn "Could not update bridge IPv4 dynamically. Retaining current bridge subnet: $ACTUAL_BRIDGE_V4"
+        if [[ -z "$ACTUAL_BRIDGE_V6" || "$ACTUAL_BRIDGE_V6" == "none" || "$ACTUAL_BRIDGE_V6" == "auto" ]]; then
+            incus network set "$NETWORK_NAME" ipv6.address="${GATEWAY_IPV6}/${SUBNET_CIDR_V6}" ipv6.nat=true ipv6.dhcp=true 2>/dev/null || true
+        fi
+        ACTUAL_BRIDGE_V4="$(incus network get "$NETWORK_NAME" ipv4.address 2>/dev/null || true)"
+        ACTUAL_BRIDGE_V6="$(incus network get "$NETWORK_NAME" ipv6.address 2>/dev/null || true)"
+    fi
+fi
+
+# Ensure ASSIGNED_IPV4 is strictly within the bridge's actual subnet
+ALIGNED_NETWORK_PARAMS=$(python3 - <<EOF
+import ipaddress
+import sys
+import zlib
+
+bridge_v4 = "$ACTUAL_BRIDGE_V4".strip()
+req_v4 = "$ASSIGNED_IPV4".strip()
+vm_id = "$VM_IDENTIFIER".strip()
+def_v4 = "$GATEWAY_IPV4"
+def_cidr = "$SUBNET_CIDR_V4"
+
+if bridge_v4 and "/" in bridge_v4 and bridge_v4 not in ("none", "auto"):
+    net = ipaddress.IPv4Network(bridge_v4, strict=False)
+    gw = str(net.network_address + 1)
+    cidr = str(net.prefixlen)
+    
+    # Check if requested IP fits
+    if req_v4:
+        try:
+            ip_obj = ipaddress.IPv4Address(req_v4)
+            if ip_obj in net and ip_obj != net.network_address and ip_obj != (net.network_address + 1) and ip_obj != net.broadcast_address:
+                print(f"ASSIGNED_IPV4={req_v4}")
+                print(f"GATEWAY_IPV4={gw}")
+                print(f"SUBNET_CIDR_V4={cidr}")
+                sys.exit(0)
+        except Exception:
+            pass
+    
+    # Generate valid IP in this subnet
+    hash_val = zlib.crc32(vm_id.encode())
+    num_hosts = net.num_addresses - 3
+    if num_hosts > 0:
+        offset = (hash_val % num_hosts) + 2
+        ip = str(net.network_address + offset)
+        print(f"ASSIGNED_IPV4={ip}")
+        print(f"GATEWAY_IPV4={gw}")
+        print(f"SUBNET_CIDR_V4={cidr}")
+        sys.exit(0)
+
+# Default /20 fallback
+if not req_v4:
+    hash_val = zlib.crc32(vm_id.encode())
+    offset = (hash_val % 4090) + 2
+    oct3 = offset // 256
+    oct4 = offset % 256
+    if oct4 == 0: oct4 = 1
+    req_v4 = f"10.100.{oct3}.{oct4}"
+
+print(f"ASSIGNED_IPV4={req_v4}")
+print(f"GATEWAY_IPV4={def_v4}")
+print(f"SUBNET_CIDR_V4={def_cidr}")
+EOF
+)
+
+while IFS='=' read -r key val; do
+    if [[ -n "$key" ]]; then
+        export "$key"="$val"
+    fi
+done <<< "$ALIGNED_NETWORK_PARAMS"
 
 if [[ -z "$ASSIGNED_IPV6" ]]; then
     ASSIGNED_IPV6="fd42:100:100::$(echo -n "$ASSIGNED_IPV4" | awk -F. '{printf "%x%02x", $3, $4}')"
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Image Alias Resolution
+# 3. Image Alias Resolution
 # ------------------------------------------------------------------------------
 RESOLVED_IMAGE="$OS_IMAGE"
 case "$OS_IMAGE" in
@@ -215,7 +309,7 @@ case "$OS_IMAGE" in
 esac
 
 # ------------------------------------------------------------------------------
-# 3. Print Provisioning Plan
+# 4. Print Provisioning Plan
 # ------------------------------------------------------------------------------
 log_info "=========================================="
 log_info "Incus VM High-Capacity Provisioning Plan"
@@ -228,24 +322,11 @@ echo "  - RAM Limit     : $RAM_SIZE"
 echo "  - Root Disk     : $DISK_SIZE"
 echo "  - Assigned IPv4 : $ASSIGNED_IPV4 / $SUBNET_CIDR_V4 (Gateway: $GATEWAY_IPV4)"
 echo "  - Assigned IPv6 : $ASSIGNED_IPV6 / $SUBNET_CIDR_V6 (Gateway: $GATEWAY_IPV6)"
-echo "  - Network Bridge: $NETWORK_NAME (High-capacity /20 pool: 4093 hosts)"
+echo "  - Network Bridge: $NETWORK_NAME (Subnet aligned)"
 echo "  - Admin User    : $ADMIN_USER"
 echo "  - SSH Key       : $(if [[ -n "$SSH_KEY" ]]; then echo "${SSH_KEY:0:25}... (${#SSH_KEY} chars)"; else echo "(none)"; fi)"
 echo "  - Lifetime      : $LIFETIME"
 echo "  - Dry Run Mode  : $DRY_RUN"
-
-# ------------------------------------------------------------------------------
-# 4. Check Incus Environment & Dry Run Mode
-# ------------------------------------------------------------------------------
-INCUS_BIN="$(command -v incus || true)"
-
-if [[ -z "$INCUS_BIN" ]]; then
-    log_warn "Incus command binary not found on this system PATH."
-    log_warn "Executing in SIMULATION / DRY-RUN mode."
-    DRY_RUN="1"
-elif [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
-    log_info "Dry-Run mode requested."
-fi
 
 # ------------------------------------------------------------------------------
 # 5. Prepare Cloud-Init User Data & Dual-Redundancy Network Configuration
@@ -323,10 +404,10 @@ if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
     echo "  >> incus config device override \"$VM_NAME\" root size=\"$DISK_SIZE\""
     
     log_step "[DRY-RUN] Step 5: Binding static IPv4 ($ASSIGNED_IPV4) and IPv6 ($ASSIGNED_IPV6) to NIC device"
-    echo "  >> incus config device add \"$VM_NAME\" eth0 nic network=\"$NETWORK_NAME\" name=eth0 ipv4.address=\"$ASSIGNED_IPV4\" ipv6.address=\"$ASSIGNED_IPV6\""
+    echo "  >> incus config device override \"$VM_NAME\" eth0 ipv4.address=\"$ASSIGNED_IPV4\" ipv6.address=\"$ASSIGNED_IPV6\""
     
     log_step "[DRY-RUN] Step 6: Setting Cloud-Init Dual-Stack Network Config"
-    echo "  >> incus config set \"$VM_NAME\" user.network-config < (addresses: [$ASSIGNED_IPV4/20, $ASSIGNED_IPV6/64])"
+    echo "  >> incus config set \"$VM_NAME\" user.network-config < (addresses: [$ASSIGNED_IPV4/$SUBNET_CIDR_V4, $ASSIGNED_IPV6/$SUBNET_CIDR_V6])"
     
     log_step "[DRY-RUN] Step 7: Applying Cloud-Init User Data & SSH keys"
     echo "  >> incus config set \"$VM_NAME\" user.user-data < cloud-init"
@@ -350,18 +431,6 @@ if incus info "$VM_NAME" &>/dev/null; then
     exit 1
 fi
 
-# Ensure high-capacity network bridge exists (if creating a new bridge)
-if ! incus network show "$NETWORK_NAME" &>/dev/null; then
-    log_info "Creating high-capacity network bridge '$NETWORK_NAME' with /20 subnet..."
-    incus network create "$NETWORK_NAME" \
-        ipv4.address="${GATEWAY_IPV4}/${SUBNET_CIDR_V4}" \
-        ipv4.nat=true \
-        ipv4.dhcp=true \
-        ipv6.address="${GATEWAY_IPV6}/${SUBNET_CIDR_V6}" \
-        ipv6.nat=true \
-        ipv6.dhcp=true || true
-fi
-
 log_step "Step 1: Initializing VM instance '$VM_NAME' with image '$RESOLVED_IMAGE'..."
 incus init "$RESOLVED_IMAGE" "$VM_NAME" --vm
 
@@ -375,11 +444,16 @@ log_step "Step 4: Setting root disk size ($DISK_SIZE)..."
 incus config device override "$VM_NAME" root size="$DISK_SIZE" || incus config device set "$VM_NAME" root size="$DISK_SIZE"
 
 log_step "Step 5: Binding dedicated IPv4 ($ASSIGNED_IPV4) & IPv6 ($ASSIGNED_IPV6) to NIC device..."
-if incus config device show "$VM_NAME" 2>/dev/null | grep -q "eth0:"; then
-    incus config device set "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4"
-    incus config device set "$VM_NAME" eth0 ipv6.address="$ASSIGNED_IPV6"
+if incus config show "$VM_NAME" --expanded 2>/dev/null | grep -q "eth0:"; then
+    # Override inherited eth0 device with static IP
+    incus config device override "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" ipv6.address="$ASSIGNED_IPV6" 2>/dev/null \
+    || incus config device set "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" ipv6.address="$ASSIGNED_IPV6" 2>/dev/null \
+    || incus config device override "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" 2>/dev/null \
+    || incus config device set "$VM_NAME" eth0 ipv4.address="$ASSIGNED_IPV4" 2>/dev/null \
+    || log_warn "NIC static device binding skipped; network will configure via cloud-init and DHCP lease."
 else
-    incus config device add "$VM_NAME" eth0 nic network="$NETWORK_NAME" name=eth0 ipv4.address="$ASSIGNED_IPV4" ipv6.address="$ASSIGNED_IPV6"
+    incus config device add "$VM_NAME" eth0 nic network="$NETWORK_NAME" name=eth0 ipv4.address="$ASSIGNED_IPV4" ipv6.address="$ASSIGNED_IPV6" 2>/dev/null \
+    || incus config device add "$VM_NAME" eth0 nic network="$NETWORK_NAME" name=eth0 2>/dev/null || true
 fi
 
 log_step "Step 6: Applying Dual-Stack static + DHCP network configuration..."

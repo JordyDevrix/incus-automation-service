@@ -1,6 +1,8 @@
 import sqlite3
 import ipaddress
 import re
+import subprocess
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -25,7 +27,10 @@ def get_db_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
-    """Initialize the SQLite schema with IPv4 and IPv6 support."""
+    """
+    Initialize the SQLite schema with automatic column migration
+    for existing databases.
+    """
     with get_db_connection(db_path) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vms (
@@ -42,21 +47,69 @@ def init_db(db_path: Path = DB_PATH) -> None:
                 status TEXT
             );
         """)
+
+        # Auto-migrate table if created with previous schema
+        cursor = conn.execute("PRAGMA table_info(vms);")
+        existing_cols = {row["name"] for row in cursor.fetchall()}
+        
+        if "ipv4_address" not in existing_cols:
+            conn.execute("ALTER TABLE vms ADD COLUMN ipv4_address TEXT;")
+        if "ipv6_address" not in existing_cols:
+            conn.execute("ALTER TABLE vms ADD COLUMN ipv6_address TEXT;")
+
         # Create index on valid_thru for fast cleanup queries
         conn.execute("CREATE INDEX IF NOT EXISTS idx_vms_valid_thru ON vms(valid_thru);")
         conn.commit()
 
 
+def detect_incus_network_subnet(network_name: str = "incusbr0") -> Tuple[str, str]:
+    """
+    Inspects active Incus bridge network if incus is present on host.
+    Returns (ipv4_network_cidr, ipv6_prefix).
+    """
+    incus_bin = shutil.which("incus")
+    if not incus_bin:
+        return DEFAULT_IPV4_NETWORK, DEFAULT_IPV6_PREFIX
+
+    try:
+        # Check if network exists
+        res = subprocess.run([incus_bin, "network", "get", network_name, "ipv4.address"], capture_output=True, text=True, timeout=5)
+        if res.returncode == 0 and res.stdout.strip():
+            raw_v4 = res.stdout.strip()
+            # If raw_v4 is e.g. "10.0.8.1/24"
+            if "/" in raw_v4 and raw_v4 not in ("none", "auto"):
+                ip_part, prefix = raw_v4.split("/")
+                # Convert gateway IP to network CIDR
+                net = ipaddress.IPv4Network(f"{ip_part}/{prefix}", strict=False)
+                # Check if IPv6 is configured
+                res_v6 = subprocess.run([incus_bin, "network", "get", network_name, "ipv6.address"], capture_output=True, text=True, timeout=5)
+                v6_prefix = DEFAULT_IPV6_PREFIX
+                if res_v6.returncode == 0 and "/" in res_v6.stdout:
+                    v6_raw = res_v6.stdout.strip().split("/")[0]
+                    v6_prefix = ":".join(v6_raw.split(":")[:3]) if ":" in v6_raw else DEFAULT_IPV6_PREFIX
+                return str(net), v6_prefix
+    except Exception:
+        pass
+
+    return DEFAULT_IPV4_NETWORK, DEFAULT_IPV6_PREFIX
+
+
 def allocate_next_ip(
     db_path: Path = DB_PATH,
-    network_cidr: str = DEFAULT_IPV4_NETWORK,
-    ipv6_prefix: str = DEFAULT_IPV6_PREFIX
+    network_cidr: Optional[str] = None,
+    ipv6_prefix: Optional[str] = None
 ) -> Tuple[str, str]:
     """
     Finds and allocates the next available IPv4 and IPv6 address from the subnet pool.
     Guarantees zero collisions across 4,000+ VM allocations.
     """
     init_db(db_path)
+
+    if not network_cidr or not ipv6_prefix:
+        detected_cidr, detected_v6 = detect_incus_network_subnet()
+        network_cidr = network_cidr or detected_cidr
+        ipv6_prefix = ipv6_prefix or detected_v6
+
     net = ipaddress.IPv4Network(network_cidr, strict=False)
 
     with get_db_connection(db_path) as conn:
@@ -80,7 +133,7 @@ def allocate_next_ip(
             break
 
     if not allocated_v4:
-        raise RuntimeError(f"Subnet pool {network_cidr} is completely exhausted (4,000+ IPs allocated)!")
+        raise RuntimeError(f"Subnet pool {network_cidr} is completely exhausted!")
 
     # Deterministic IPv6 address derived from host offset (e.g. fd42:100:100::1002)
     allocated_v6 = f"{ipv6_prefix}::{offset_index:x}"
