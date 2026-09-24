@@ -1,0 +1,13 @@
+instance:
+  name: "web-server-01"
+  os_image: "ubuntu-22.04"
+  users:
+    - username: "admin"
+      password: "securepassword123"
+      ssh_keys:
+        - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..."
+
+  resources:
+    cpu: 2
+    ram: 4
+    disk: 40
