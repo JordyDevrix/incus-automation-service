@@ -49,7 +49,7 @@ ADMIN_USER="${INSTANCE_ADMIN_USER:-admin}"
 LIFETIME="${INSTANCE_LIFETIME:-7d}"
 VM_IDENTIFIER="${VM_IDENTIFIER:-}"
 
-# High-Capacity /20 Network Configuration Defaults
+# Network Defaults
 NETWORK_NAME="${INSTANCE_NETWORK:-incusbr0}"
 ASSIGNED_IPV4="${INSTANCE_IPV4:-}"
 ASSIGNED_IPV6="${INSTANCE_IPV6:-}"
@@ -187,30 +187,32 @@ elif [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Bridge Network Auto-Inspection & Subnet Alignment
+# 2. Bridge Network Kernel & Subnet Inspection
 # ------------------------------------------------------------------------------
 ACTUAL_BRIDGE_V4=""
 ACTUAL_BRIDGE_V6=""
 
-if [[ -n "$INCUS_BIN" && "$DRY_RUN" != "1" && "$DRY_RUN" != "true" ]]; then
-    # Create network if missing
-    if ! "$INCUS_BIN" network show "$NETWORK_NAME" &>/dev/null; then
-        log_info "Creating bridge '$NETWORK_NAME' ($GATEWAY_IPV4/$SUBNET_CIDR_V4 -> 4093 hosts)..."
-        "$INCUS_BIN" network create "$NETWORK_NAME" \
-            ipv4.address="${GATEWAY_IPV4}/${SUBNET_CIDR_V4}" \
-            ipv4.nat=true \
-            ipv4.dhcp=true \
-            ipv6.address="${GATEWAY_IPV6}/${SUBNET_CIDR_V6}" \
-            ipv6.nat=true \
-            ipv6.dhcp=true 2>/dev/null || true
-    fi
-
-    # Read current bridge IP config
-    ACTUAL_BRIDGE_V4="$("$INCUS_BIN" network get "$NETWORK_NAME" ipv4.address 2>/dev/null || true)"
-    ACTUAL_BRIDGE_V6="$("$INCUS_BIN" network get "$NETWORK_NAME" ipv6.address 2>/dev/null || true)"
+# 1. Check kernel network interface via ip command
+if command -v ip &>/dev/null; then
+    ACTUAL_BRIDGE_V4="$(ip -4 -o addr show dev "$NETWORK_NAME" 2>/dev/null | awk '{print $4}' | head -n 1 || true)"
+    ACTUAL_BRIDGE_V6="$(ip -6 -o addr show dev "$NETWORK_NAME" scope global 2>/dev/null | awk '{print $4}' | head -n 1 || true)"
 fi
 
-# Dynamically calculate IP alignment with actual host bridge subnet
+# 2. Check Incus CLI if ip command didn't find CIDR
+if [[ -z "$ACTUAL_BRIDGE_V4" && -n "$INCUS_BIN" ]]; then
+    raw_cli_v4="$("$INCUS_BIN" network get "$NETWORK_NAME" ipv4.address 2>/dev/null || true)"
+    if [[ "$raw_cli_v4" =~ / ]]; then
+        ACTUAL_BRIDGE_V4="$raw_cli_v4"
+    fi
+fi
+if [[ -z "$ACTUAL_BRIDGE_V6" && -n "$INCUS_BIN" ]]; then
+    raw_cli_v6="$("$INCUS_BIN" network get "$NETWORK_NAME" ipv6.address 2>/dev/null || true)"
+    if [[ "$raw_cli_v6" =~ / ]]; then
+        ACTUAL_BRIDGE_V6="$raw_cli_v6"
+    fi
+fi
+
+# Dynamically calculate and align IP parameters with active host bridge subnet
 ALIGNED_NETWORK_PARAMS=$(python3 - <<EOF
 import ipaddress
 import sys
@@ -235,14 +237,14 @@ final_v6_gw = def_v6_gw
 final_v6_cidr = def_v6_cidr
 
 # 1. Process IPv4 Subnet Alignment
-if bridge_v4 and "/" in bridge_v4 and bridge_v4 not in ("none", "auto"):
+if bridge_v4 and "/" in bridge_v4:
     try:
         ip_part, cidr_part = bridge_v4.split("/")
         net4 = ipaddress.IPv4Network(f"{ip_part}/{cidr_part}", strict=False)
         final_v4_gw = ip_part
         final_v4_cidr = cidr_part
 
-        # Check if requested IP is inside this subnet
+        # Check if requested IP fits inside this exact subnet
         if req_v4:
             try:
                 ip_obj = ipaddress.IPv4Address(req_v4)
@@ -273,7 +275,7 @@ if not final_v4:
         final_v4 = f"10.100.{oct3}.{oct4}"
 
 # 2. Process IPv6 Subnet Alignment
-if bridge_v6 and "/" in bridge_v6 and bridge_v6 not in ("none", "auto"):
+if bridge_v6 and "/" in bridge_v6:
     try:
         v6_ip_part, v6_cidr_part = bridge_v6.split("/")
         net6 = ipaddress.IPv6Network(f"{v6_ip_part}/{v6_cidr_part}", strict=False)
@@ -283,7 +285,7 @@ if bridge_v6 and "/" in bridge_v6 and bridge_v6 not in ("none", "auto"):
         parts = [p for p in v6_ip_part.split(":") if p]
         prefix = ":".join(parts[:4] if len(parts) >= 4 else parts[:3])
         
-        hash_val = zlib.crc32(vm_id.encode()) % 65530 + 2
+        hash_val = (zlib.crc32(vm_id.encode()) % 65530) + 2
         final_v6 = f"{prefix}::{hash_val:x}"
     except Exception:
         pass
@@ -292,7 +294,7 @@ if not final_v6:
     if req_v6:
         final_v6 = req_v6
     else:
-        hash_val = zlib.crc32(vm_id.encode()) % 65530 + 2
+        hash_val = (zlib.crc32(vm_id.encode()) % 65530) + 2
         final_v6 = f"fd42:100:100::{hash_val:x}"
 
 print(f"ASSIGNED_IPV4={final_v4}")
@@ -352,7 +354,7 @@ echo "  - RAM Limit     : $RAM_SIZE"
 echo "  - Root Disk     : $DISK_SIZE"
 echo "  - Assigned IPv4 : $ASSIGNED_IPV4 / $SUBNET_CIDR_V4 (Gateway: $GATEWAY_IPV4)"
 echo "  - Assigned IPv6 : $ASSIGNED_IPV6 / $SUBNET_CIDR_V6 (Gateway: $GATEWAY_IPV6)"
-echo "  - Network Bridge: $NETWORK_NAME (Subnet verified)"
+echo "  - Network Bridge: $NETWORK_NAME (Subnet: $GATEWAY_IPV4/$SUBNET_CIDR_V4)"
 echo "  - Admin User    : $ADMIN_USER"
 echo "  - SSH Key       : $(if [[ -n "$SSH_KEY" ]]; then echo "${SSH_KEY:0:25}... (${#SSH_KEY} chars)"; else echo "(none)"; fi)"
 echo "  - Lifetime      : $LIFETIME"

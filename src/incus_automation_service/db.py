@@ -79,33 +79,51 @@ def find_incus_bin() -> Optional[str]:
 
 def detect_incus_network_subnet(network_name: str = "incusbr0") -> Tuple[str, str]:
     """
-    Inspects active Incus bridge network if incus is present on host.
-    Returns (ipv4_network_cidr, ipv6_prefix).
+    Inspects active host Incus bridge network via kernel interface (ip addr)
+    or Incus CLI. Returns (ipv4_network_cidr, ipv6_prefix).
     """
-    incus_bin = find_incus_bin()
-    if not incus_bin:
-        return DEFAULT_IPV4_NETWORK, DEFAULT_IPV6_PREFIX
-
+    # 1. Primary inspection: Query kernel network interface directly
     try:
-        res = subprocess.run([incus_bin, "network", "get", network_name, "ipv4.address"], capture_output=True, text=True, timeout=5)
+        res = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", network_name], capture_output=True, text=True, timeout=5)
         if res.returncode == 0 and res.stdout.strip():
-            raw_v4 = res.stdout.strip()
-            if "/" in raw_v4 and raw_v4 not in ("none", "auto"):
-                ip_part, prefix = raw_v4.split("/")
-                net = ipaddress.IPv4Network(f"{ip_part}/{prefix}", strict=False)
+            match = re.search(r"inet\s+([0-9\.]+/[0-9]+)", res.stdout)
+            if match:
+                raw_cidr = match.group(1)
+                net = ipaddress.IPv4Network(raw_cidr, strict=False)
                 
-                # Check if IPv6 is configured on bridge
                 v6_prefix = DEFAULT_IPV6_PREFIX
-                res_v6 = subprocess.run([incus_bin, "network", "get", network_name, "ipv6.address"], capture_output=True, text=True, timeout=5)
-                if res_v6.returncode == 0 and "/" in res_v6.stdout:
-                    v6_raw = res_v6.stdout.strip().split("/")[0]
-                    # Take first 4 segments of IPv6 address
-                    parts = [p for p in v6_raw.split(":") if p]
-                    if len(parts) >= 3:
-                        v6_prefix = ":".join(parts[:4] if len(parts) >= 4 else parts[:3])
+                res_v6 = subprocess.run(["ip", "-6", "-o", "addr", "show", "dev", network_name, "scope", "global"], capture_output=True, text=True, timeout=5)
+                if res_v6.returncode == 0 and res_v6.stdout.strip():
+                    m6 = re.search(r"inet6\s+([a-fA-F0-9:]+/[0-9]+)", res_v6.stdout)
+                    if m6:
+                        raw_v6 = m6.group(1).split("/")[0]
+                        parts = [p for p in raw_v6.split(":") if p]
+                        if len(parts) >= 3:
+                            v6_prefix = ":".join(parts[:4] if len(parts) >= 4 else parts[:3])
                 return str(net), v6_prefix
     except Exception:
         pass
+
+    # 2. Secondary inspection: Query Incus CLI
+    incus_bin = find_incus_bin()
+    if incus_bin:
+        try:
+            res = subprocess.run([incus_bin, "network", "get", network_name, "ipv4.address"], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0 and res.stdout.strip():
+                raw_v4 = res.stdout.strip()
+                if "/" in raw_v4 and raw_v4 not in ("none", "auto"):
+                    net = ipaddress.IPv4Network(raw_v4, strict=False)
+                    
+                    v6_prefix = DEFAULT_IPV6_PREFIX
+                    res_v6 = subprocess.run([incus_bin, "network", "get", network_name, "ipv6.address"], capture_output=True, text=True, timeout=5)
+                    if res_v6.returncode == 0 and "/" in res_v6.stdout:
+                        v6_raw = res_v6.stdout.strip().split("/")[0]
+                        parts = [p for p in v6_raw.split(":") if p]
+                        if len(parts) >= 3:
+                            v6_prefix = ":".join(parts[:4] if len(parts) >= 4 else parts[:3])
+                    return str(net), v6_prefix
+        except Exception:
+            pass
 
     return DEFAULT_IPV4_NETWORK, DEFAULT_IPV6_PREFIX
 
